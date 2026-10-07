@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { resolveAuthor } from "../composables/useAuthorAliases";
+import { normalizeTags } from "../catalogTags";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { CatalogEntry, OversizeActionStrategy, Project } from "../types";
 import { useLibrary } from "../composables/useLibrary";
@@ -13,7 +16,7 @@ const GOOGLE_SHEETS_SPREADSHEET_ID = "1jxBbWB08myhD8YXePPifsWQG3JH2qZtBs9Y5yYcqE
 const GOOGLE_SHEETS_SHEET_NAME = "Beta Index";
 const LOCAL_CATALOG_URL = "/zip_link_catalog_data.js";
 
-const { projects, loadLibrary, startDownloadCatalogEntry, startOverwriteCatalogEntry, startApplyOversizeProjectAction, setProjectFavorite } = useLibrary();
+const { projects, loadLibrary, startDownloadCatalogEntry, startOverwriteCatalogEntry, startApplyOversizeProjectAction, setProjectFavorite, updateProject } = useLibrary();
 const { settings } = useSettings();
 
 const entries = ref<CatalogEntry[]>([]);
@@ -120,6 +123,8 @@ const displayedList = computed(() => {
 
     return {
       ...entry,
+      source_author:entry.author,
+      author:resolveAuthor(entry.author),
       catalogKey: buildCatalogKey(entry),
       hostLabel: extractHostLabel(entry.website),
       existingProjectId: existingProject?.id || null,
@@ -173,7 +178,7 @@ const displayedList = computed(() => {
   return list;
 });
 
-const authorOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.author)));
+const authorOptions = computed(() => buildOptionList(entries.value.map((entry) => resolveAuthor(entry.author))));
 const universeOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.universe)));
 const importerOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.importer)));
 const typeOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.type)));
@@ -328,6 +333,12 @@ async function downloadCatalogEntry(
   showSuccessBanner: boolean,
   existingProjectId: string | null,
 ): Promise<boolean> {
+  if(!isIccEntry(entry)){
+    addingLink.value=buildCatalogKey(entry);error.value=null;addStatus.value="Saving website and linked resources…";addProgress.value=0;
+    try{const {project,unavailable}=await invoke<{project:Project;unavailable:string[]}>("download_website",{url:entry.website,title:entry.name,author:entry.source_author||entry.author||"",fandom:entry.universe||"",description:entry.description||"",maxSizeMb:settings.value.downloadSizeLimitMb,existingProjectId});
+      await loadLibrary(true);if(showSuccessBanner)successMessage.value=`${project.title||project.name} saved. ${unavailable.length ? `${unavailable.length} resources could not be saved. ` : ""}Choose Website (online) for sites requiring live services.`;return true;
+    }catch(e){error.value=String(e);return false;}finally{addingLink.value=null;}
+  }
   addingLink.value = buildCatalogKey(entry);
   error.value = null;
   if (showSuccessBanner) {
@@ -358,6 +369,16 @@ async function downloadCatalogEntry(
 
       if (success) {
         await loadLibrary(true);
+        const project = projects.value.find(p => p.id === existingProjectId || p.name === entry.name || p.source_url === entry.website);
+        if (project) {
+          await updateProject(project.id, {
+            title: existingProjectId ? project.title : entry.name.split(":").slice(-1)[0].trim(),
+            author: existingProjectId ? project.source_author ?? project.author : entry.source_author || entry.author || project.author,
+            fandom: existingProjectId ? project.fandom : entry.universe || project.fandom,
+            description: existingProjectId ? project.description : entry.description || project.description,
+            is_mod: existingProjectId ? project.is_mod : Boolean(project.is_mod || /\bmod\b/i.test(entry.name)),
+          });
+        }
         if (showSuccessBanner && message) {
           successMessage.value = message;
         }
@@ -844,6 +865,7 @@ function buildCatalogSearchHaystack(entry: CatalogListEntry): string[] {
     entry.website,
     entry.date,
     entry.author,
+    entry.source_author,
     entry.universe,
     entry.importer,
     entry.type,
@@ -874,25 +896,9 @@ function normalizeCatalogEngine(engine: unknown): string {
   return engine.trim().toUpperCase();
 }
 
-function canAddCatalogEntry(entry: CatalogEntry): boolean {
-  const engine = normalizeCatalogEngine(entry.engine);
-  return engine === "ICC" || engine === "ICC2";
-}
-
-function combineCatalogTags(...groups: string[]): string[] {
-  const seen = new Set<string>();
-
-  for (const group of groups) {
-    for (const tag of group.split(",")) {
-      const cleaned = tag.trim();
-      if (cleaned) {
-        seen.add(cleaned);
-      }
-    }
-  }
-
-  return [...seen];
-}
+function isIccEntry(entry:CatalogEntry):boolean{return ["ICC","ICC2"].includes(normalizeCatalogEngine(entry.engine));}
+function canAddCatalogEntry(entry: CatalogEntry): boolean {try{return ["http:","https:"].includes(new URL(entry.website).protocol);}catch{return false;}}
+function combineCatalogTags(...groups:string[]):string[]{return normalizeTags(groups);}
 
 function buildCatalogKey(entry: CatalogEntry): string {
   return `${entry.website}::${entry.name}`;
@@ -992,7 +998,9 @@ function getTypeBadgeClass(type: string | undefined): string {
         v-model="search"
         class="search"
         type="text"
-        placeholder="Search terms, use -word to exclude…"
+        placeholder="Search catalog"
+        :title="search ? `${search} — use -word to exclude matches` : 'Search title, author, fandom or tags; use -word to exclude matches'"
+        aria-label="Search catalog"
       />
 
       <select v-model="sort" class="filter-select" title="Sort">
@@ -1046,7 +1054,7 @@ function getTypeBadgeClass(type: string | undefined): string {
         <option value="favorites">Only Favorites ♥</option>
       </select>
 
-      <select v-model="authorFilter" class="filter-select">
+      <select v-model="authorFilter" class="filter-select" aria-label="Filter by author">
         <option value="">All authors</option>
         <option v-for="option in authorOptions" :key="option" :value="option">{{ option }}</option>
       </select>
@@ -1091,7 +1099,7 @@ function getTypeBadgeClass(type: string | undefined): string {
     <div v-if="successMessage" class="banner success">{{ successMessage }}</div>
     <div v-if="error" class="banner error">{{ error }}</div>
 
-    <div v-if="loading" class="center-msg">Loading catalog…</div>
+    <div v-if="loading && !entries.length" class="center-msg">Loading catalog…</div>
     <div v-else-if="displayedList.length === 0" class="center-msg">No catalog entries match your filter.</div>
 
     <div v-else class="grid">
@@ -1133,7 +1141,7 @@ function getTypeBadgeClass(type: string | undefined): string {
 
           <div v-if="entry.tags?.length" class="tag-list">
             <span v-for="tag in entry.tags" :key="tag" class="tag-chip">{{ tag }}</span>
-            <span class="tag-chip">PoV: {{ entry.pov }}</span>
+            <span v-if="entry.pov?.trim()" class="tag-chip">PoV: {{ entry.pov }}</span>
           </div>
 
           <ProgressBar
@@ -1160,10 +1168,10 @@ function getTypeBadgeClass(type: string | undefined): string {
             <button
               :class="entry.existingProjectId ? 'btn-overwrite' : 'btn-primary'"
               :disabled="addingLink !== null || batchDownloadInProgress || !canAddCatalogEntry(entry)"
-              :title="canAddCatalogEntry(entry) ? undefined : 'Only ICC and ICC2 entries can be added to the library'"
+              :title="canAddCatalogEntry(entry) ? undefined : 'A valid website link is required'"
               @click.stop="addEntry(entry)"
             >
-              {{ addingLink === entry.catalogKey ? (entry.existingProjectId ? "Overwriting…" : "Adding…") : (entry.existingProjectId ? "Overwrite" : canAddCatalogEntry(entry) ? "Add to Library" : "Not an ICC/ICC2") }}
+              {{ addingLink === entry.catalogKey ? (entry.existingProjectId ? "Overwriting…" : "Adding…") : (entry.existingProjectId ? "Overwrite" : isIccEntry(entry) ? "Add to Library" : canAddCatalogEntry(entry) ? "Save website" : "No website") }}
             </button>
           </div>
         </div>
@@ -1203,48 +1211,11 @@ function getTypeBadgeClass(type: string | undefined): string {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  --catalog-card-top-tint: rgba(110, 160, 255, 0.08);
-  --catalog-card-side-tint: rgba(255, 160, 120, 0.08);
-  --catalog-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --catalog-date-bg: rgba(9, 16, 28, 0.58);
-  --catalog-date-border: rgba(151, 180, 228, 0.16);
-  --catalog-date-color: #f7f9ff;
-  --catalog-author-label: rgba(255, 205, 145, 0.75);
-  --catalog-author-name: #ffdca8;
-  --catalog-byline: rgba(220, 229, 245, 0.72);
-  --catalog-meta-bg: rgba(255, 255, 255, 0.045);
-  --catalog-meta-border: rgba(165, 184, 214, 0.16);
-  --catalog-meta-highlight-bg: rgba(255, 220, 140, 0.08);
-  --catalog-meta-highlight-border: rgba(255, 210, 132, 0.26);
-  --catalog-meta-label: rgba(145, 154, 176, 0.8);
-  --catalog-description: rgba(225, 232, 244, 0.8);
-  --catalog-tag-bg: rgba(107, 163, 255, 0.16);
-  --catalog-tag-border: rgba(107, 163, 255, 0.28);
-  --catalog-tag-color: #d4e4ff;
-  --catalog-source-link: #9ec5ff;
-}
-
-:global(html:not(.dark) .catalog-view),
-:global(:root:not(.dark) .catalog-view) {
-  --catalog-card-top-tint: rgba(73, 119, 221, 0.13);
-  --catalog-card-side-tint: rgba(255, 166, 94, 0.16);
-  --catalog-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 12px 28px rgba(42, 56, 92, 0.1);
-  --catalog-date-bg: rgba(255, 255, 255, 0.92);
-  --catalog-date-border: rgba(85, 111, 167, 0.26);
-  --catalog-date-color: #243555;
-  --catalog-author-label: #915018;
-  --catalog-author-name: #6e2605;
-  --catalog-byline: #42506a;
-  --catalog-meta-bg: rgba(255, 255, 255, 0.9);
-  --catalog-meta-border: rgba(96, 118, 161, 0.24);
-  --catalog-meta-highlight-bg: rgba(255, 214, 122, 0.22);
-  --catalog-meta-highlight-border: rgba(184, 129, 34, 0.36);
-  --catalog-meta-label: #5b667b;
-  --catalog-description: #334055;
-  --catalog-tag-bg: rgba(58, 108, 232, 0.14);
-  --catalog-tag-border: rgba(58, 108, 232, 0.26);
-  --catalog-tag-color: #2348a5;
-  --catalog-source-link: #2458c6;
+  --catalog-card-top-tint: transparent;--catalog-card-side-tint: transparent;--catalog-card-shadow: none;
+  --catalog-date-bg: var(--input-bg);--catalog-date-border: var(--border);--catalog-date-color: var(--text);
+  --catalog-author-label: var(--muted);--catalog-author-name: var(--text);--catalog-byline: var(--muted);
+  --catalog-meta-bg: var(--input-bg);--catalog-meta-border: var(--border);--catalog-meta-highlight-bg: var(--input-bg);--catalog-meta-highlight-border: var(--border);--catalog-meta-label: var(--muted);
+  --catalog-description: var(--text);--catalog-tag-bg: var(--tag-bg);--catalog-tag-border: var(--border);--catalog-tag-color: var(--tag-color);--catalog-source-link: var(--accent);
 }
 
 .source-link {
@@ -1436,7 +1407,7 @@ function getTypeBadgeClass(type: string | undefined): string {
   border: 1px solid transparent;
   color: #fff;
   font-size: 0.72rem;
-  font-weight: 600;
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -1525,7 +1496,7 @@ function getTypeBadgeClass(type: string | undefined): string {
 .author-name {
   color: var(--catalog-author-name);
   font-size: 0.92rem;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .byline {
@@ -1669,4 +1640,5 @@ function getTypeBadgeClass(type: string | undefined): string {
   font-size: 0.95rem;
   padding: 30px;
 }
+.badge-type-nsfw{background:var(--danger);color:var(--accent-text)}.badge-type-sfw{background:var(--accent);color:var(--accent-text)}.badge-type-default{background:var(--input-bg);color:var(--text)}
 </style>

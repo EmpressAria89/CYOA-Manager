@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path,PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -12,6 +12,9 @@ pub struct LibraryLoadResult {
 }
 
 pub fn data_root_dir() -> PathBuf {
+    if let Some(path)=std::env::var_os("CYOA_MANAGER_DATA_DIR") {
+        let path=PathBuf::from(path); if path.is_absolute(){return path;}
+    }
     #[cfg(debug_assertions)]
     {
         let manifest = env!("CARGO_MANIFEST_DIR");
@@ -119,8 +122,8 @@ pub fn update_project(project: &Project) -> Result<(), String> {
                 favorite = ?8,
                 exclude_from_perk_index = ?9,
                 date_added = ?10,
-                tags_json = ?11
-            WHERE id = ?12
+                tags_json = ?11, details_json = ?12
+            WHERE id = ?13
             ",
             project_row_params(project),
         )
@@ -153,8 +156,8 @@ pub fn update_projects(projects: &[Project]) -> Result<(), String> {
                     favorite = ?8,
                     exclude_from_perk_index = ?9,
                     date_added = ?10,
-                    tags_json = ?11
-                WHERE id = ?12
+                    tags_json = ?11, details_json = ?12
+                WHERE id = ?13
                 ",
                 project_row_params(project),
             )
@@ -228,7 +231,7 @@ pub fn reload_library() -> Result<Library, String> {
     load_library().map(|result| result.library)
 }
 
-fn project_row_params(project: &Project) -> [rusqlite::types::Value; 12] {
+fn project_row_params(project: &Project) -> [rusqlite::types::Value; 13] {
     [
         project.name.clone().into(),
         project.description.clone().into(),
@@ -241,6 +244,7 @@ fn project_row_params(project: &Project) -> [rusqlite::types::Value; 12] {
         (project.exclude_from_perk_index as i64).into(),
         project.date_added.clone().into(),
         serde_json::to_string(&project.tags).unwrap_or_else(|_| "[]".to_string()).into(),
+        serde_json::to_string(&project.metadata).unwrap_or_else(|_| "{}".into()).into(),
         project.id.clone().into(),
     ]
 }
@@ -250,8 +254,8 @@ fn upsert_project(conn: &Connection, project: &Project) -> Result<(), String> {
     conn.execute(
         "
         INSERT INTO library_projects (
-            id, name, description, cover_image, source_url, project_json_url, file_path, viewer_preference, favorite, exclude_from_perk_index, date_added, tags_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            id, name, description, cover_image, source_url, project_json_url, file_path, viewer_preference, favorite, exclude_from_perk_index, date_added, tags_json, details_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             description = excluded.description,
@@ -263,7 +267,8 @@ fn upsert_project(conn: &Connection, project: &Project) -> Result<(), String> {
             favorite = excluded.favorite,
             exclude_from_perk_index = excluded.exclude_from_perk_index,
             date_added = excluded.date_added,
-            tags_json = excluded.tags_json
+            tags_json = excluded.tags_json,
+            details_json = excluded.details_json
         ",
         params![
             project.id,
@@ -278,6 +283,7 @@ fn upsert_project(conn: &Connection, project: &Project) -> Result<(), String> {
             project.exclude_from_perk_index as i64,
             project.date_added,
             tags_json,
+            serde_json::to_string(&project.metadata).map_err(|e| e.to_string())?,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -313,12 +319,14 @@ fn initialize_library_schema(conn: &Connection) -> Result<(), String> {
             favorite INTEGER NOT NULL DEFAULT 0,
             exclude_from_perk_index INTEGER NOT NULL DEFAULT 0,
             date_added TEXT NOT NULL,
-            tags_json TEXT NOT NULL
+            tags_json TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}'
         );
         ",
     )
     .map_err(|e| e.to_string())?;
 
+    let mut has_details = false;
     let mut has_favorite = false;
     let mut has_exclude_from_perk_index = false;
     let mut has_project_json_url = false;
@@ -330,6 +338,7 @@ fn initialize_library_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     for column in columns {
         match column.map_err(|e| e.to_string())?.as_str() {
+            "details_json" => has_details = true,
             "favorite" => has_favorite = true,
             "exclude_from_perk_index" => has_exclude_from_perk_index = true,
             "project_json_url" => has_project_json_url = true,
@@ -337,6 +346,9 @@ fn initialize_library_schema(conn: &Connection) -> Result<(), String> {
         }
     }
 
+    if !has_details {
+        conn.execute("ALTER TABLE library_projects ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'", []).map_err(|e| e.to_string())?;
+    }
     if !has_project_json_url {
         conn.execute(
             "ALTER TABLE library_projects ADD COLUMN project_json_url TEXT",
@@ -379,7 +391,7 @@ fn read_library_from_db(conn: &Connection) -> Result<Library, String> {
     let mut statement = conn
         .prepare(
             "
-            SELECT id, name, description, cover_image, source_url, project_json_url, file_path, viewer_preference, favorite, exclude_from_perk_index, date_added, tags_json
+            SELECT id, name, description, cover_image, source_url, project_json_url, file_path, viewer_preference, favorite, exclude_from_perk_index, date_added, tags_json, details_json
             FROM library_projects
             ORDER BY date_added DESC, name COLLATE NOCASE ASC
             ",
@@ -391,14 +403,18 @@ fn read_library_from_db(conn: &Connection) -> Result<Library, String> {
             let tags_json: String = row.get(11)?;
             let tags = serde_json::from_str(&tags_json).unwrap_or_default();
 
+            let mut file_path:String=row.get(6)?;
+            if !Path::new(&file_path).exists() && file_path.contains('\\') {let candidate=file_path.replace('\\',"/");if Path::new(&candidate).is_file(){file_path=candidate;}}
             Ok(Project {
+                metadata: serde_json::from_str(&row.get::<_, String>(12)?).unwrap_or_default(),
+                build_count: 0,
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
                 cover_image: row.get(3)?,
                 source_url: row.get(4)?,
                 project_json_url: row.get(5)?,
-                file_path: row.get(6)?,
+                file_path,
                 viewer_preference: row.get(7)?,
                 favorite: row.get::<_, i64>(8)? != 0,
                 exclude_from_perk_index: row.get::<_, i64>(9)? != 0,
@@ -427,8 +443,8 @@ fn write_library_to_db(conn: &mut Connection, library: &Library) -> Result<(), S
             .prepare(
                 "
                 INSERT INTO library_projects (
-                    id, name, description, cover_image, source_url, project_json_url, file_path, viewer_preference, favorite, exclude_from_perk_index, date_added, tags_json
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                    id, name, description, cover_image, source_url, project_json_url, file_path, viewer_preference, favorite, exclude_from_perk_index, date_added, tags_json, details_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                 ",
             )
             .map_err(|e| e.to_string())?;
@@ -449,6 +465,7 @@ fn write_library_to_db(conn: &mut Connection, library: &Library) -> Result<(), S
                     project.exclude_from_perk_index as i64,
                     project.date_added,
                     tags_json,
+            serde_json::to_string(&project.metadata).map_err(|e| e.to_string())?,
                 ])
                 .map_err(|e| e.to_string())?;
         }

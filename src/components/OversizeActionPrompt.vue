@@ -13,8 +13,8 @@ const emit = defineEmits<{
 
 <template>
   <div class="oversize-content">
-    <h3>Project is too large</h3>
-    <p>Final size is {{ finalSizeMb }} MB, limit is {{ limitMb }} MB.</p>
+    <h3>Large project</h3>
+    <p>Size: {{ finalSizeMb }} MB; your threshold: {{ limitMb }} MB. Archives and thumbnails are compressed automatically.</p>
     <div class="oversize-actions">
       <button
         class="oversize-action-btn oversize-action-primary"
@@ -28,14 +28,14 @@ const emit = defineEmits<{
         :disabled="busy"
         @click="emit('choose', 'compress')"
       >
-        Attempt compression (can take very long)
+        Reduce artwork quality (lossy)
       </button>
       <button
         class="oversize-action-btn oversize-action-muted"
         :disabled="busy"
         @click="emit('choose', 'do-nothing')"
       >
-        Do nothing
+        Keep original artwork
       </button>
     </div>
     <div v-if="busy" class="oversize-running">{{ status || "Applying action…" }}</div>

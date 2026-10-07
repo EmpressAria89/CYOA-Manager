@@ -1,4 +1,15 @@
 export interface Project {
+  title?: string;
+  author?: string;
+  source_author?: string;
+  modder?: string;
+  kind?: string;
+  fandom?: string;
+  completion?: string;
+  is_mod?: boolean;
+  build_count?: number;
+  viewer_check?: string;
+
   id: string;
   name: string;
   description: string;
@@ -15,6 +26,17 @@ export interface Project {
 }
 
 export interface ProjectPatch {
+  title?: string;
+  author?: string;
+  source_author?: string;
+  modder?: string;
+  kind?: string;
+  fandom?: string;
+  completion?: string;
+  is_mod?: boolean;
+  build_count?: number;
+  viewer_check?: string;
+
   name?: string;
   description?: string;
   /** empty string clears the cover */
@@ -64,6 +86,9 @@ export interface CatalogEntry {
   link: string;
   engine?: string;
   author?: string;
+  source_author?: string;
+  modder?: string;
+  kind?: string;
   universe?: string;
   importer?: string;
   type?: string;
@@ -74,6 +99,6 @@ export interface CatalogEntry {
 }
 
 export type SortKey = "name" | "date_added" | "favorite_date_added";
-export type Theme = "light" | "dark" | "system";
-export type OversizeDefaultAction = "ask" | "keep-separate" | "compress";
+export type Theme = "light" | "dark" | "system" | "latte" | "frappe" | "macchiato" | "mocha";
+export type OversizeDefaultAction = "ask" | "keep-separate" | "compress" | "do-nothing";
 export type OversizeActionStrategy = "keep-separate" | "compress" | "do-nothing";

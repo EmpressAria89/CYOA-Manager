@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
 import { ref, onMounted, computed } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useLibrary } from "../composables/useLibrary";
 import { useSettings } from "../composables/useSettings";
+import { normalizeTags } from "../catalogTags";
+import VersionHistory from "../components/VersionHistory.vue";
 import ProjectCard from "../components/ProjectCard.vue";
 import AddProjectDialog from "../components/AddProjectDialog.vue";
 import BulkImportDialog from "../components/BulkImportDialog.vue";
@@ -24,13 +27,25 @@ const {
   setProjectFavorite,
   updateProject,
   openViewer,
-  allTags,
 } = useLibrary();
 
 const { settings } = useSettings();
 
 const search = ref("");
 const tagFilter = ref("");
+const authorFilter = ref("");
+const fandomFilter = ref("");
+const modFilter = ref("");
+const modderFilter = ref("");
+const statusFilter = ref("");
+const searchHint = computed(() => search.value ? `${search.value}\nUse -word to exclude matches.` : "Search title, author, modder, fandom, description or tags. Use -word to exclude matches.");
+const allTags = computed(() => normalizeTags(projects.value.flatMap(project => project.tags)));
+function metadataOptions(field: "author" | "fandom" | "modder") {
+  return computed(() => [...new Set(projects.value.map(project => project[field]?.trim()).filter((value): value is string => Boolean(value)))].sort((a,b) => a.localeCompare(b)));
+}
+const authors = metadataOptions("author");
+const fandoms = metadataOptions("fandom");
+const modders = metadataOptions("modder");
 const sort = ref<SortKey>("favorite_date_added");
 
 const showAdd = ref(false);
@@ -41,6 +56,10 @@ const relinkTarget = ref<Project | null>(null);
 const removeFromDiskTarget = ref<Project | null>(null);
 const removingFromDisk = ref(false);
 const migrationNotice = ref<string | null>(null);
+const duplicates = ref<{kind:string;projects:Project[]}[]>([]);
+const duplicatesOpen = ref(false);
+async function scanDuplicates() { duplicates.value=await invoke("find_duplicates"); duplicatesOpen.value=true; }
+const historyProject = ref<Project | null>(null);
 const redownloadingProjectId = ref<string | null>(null);
 const redownloadStatus = ref<string | null>(null);
 let redownloadProgressUnlisten: UnlistenFn | null = null;
@@ -68,9 +87,12 @@ const displayedList = computed(() => {
   if (tokens.length > 0) {
     list = list.filter((project) => matchesLibrarySearch(project, tokens));
   }
-  if (tagFilter.value) {
-    list = list.filter((p) => p.tags.includes(tagFilter.value));
-  }
+  if (tagFilter.value) list = list.filter(project => normalizeTags(project.tags).includes(tagFilter.value));
+  if (authorFilter.value) list = list.filter(project => project.author === authorFilter.value);
+  if (fandomFilter.value) list = list.filter(project => project.fandom === fandomFilter.value);
+  if (modFilter.value) list = list.filter(project => Boolean(project.is_mod) === (modFilter.value === "modded"));
+  if (modFilter.value === "modded" && modderFilter.value) list = list.filter(project => project.modder === modderFilter.value);
+  if (statusFilter.value) list = list.filter(project => Boolean(project.build_count) === (statusFilter.value === "completed"));
   if (sort.value === "name") {
     list.sort((a, b) => a.name.localeCompare(b.name));
   } else if (sort.value === "favorite_date_added") {
@@ -107,7 +129,7 @@ function parseLibrarySearchTokens(raw: string): LibrarySearchToken[] {
 }
 
 function buildLibrarySearchHaystack(project: Project): string[] {
-  return [project.name, ...project.tags]
+  return [project.name, project.title, project.author, project.source_author, project.modder, project.fandom, project.description, project.is_mod ? "mod" : "", project.build_count ? `Completed(${project.build_count})` : "", ...normalizeTags(project.tags)]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
 }
@@ -128,6 +150,7 @@ onMounted(async () => {
 
 async function reloadLibrary() {
   await loadLibrary(true);
+  if(await invoke<number>("enrich_catalog_metadata")) await loadLibrary(true);
 }
 
 function closeMigrationNotice() {
@@ -201,6 +224,8 @@ async function onToggleFavorite(project: Project) {
 }
 
 async function onRedownload(project: Project) {
+  if(project.kind==='website' && project.source_url){try{const result=await invoke<{unavailable:string[]}>("download_website",{url:project.source_url,title:project.title||project.name,author:project.source_author||project.author||"",fandom:project.fandom||"",description:project.description,maxSizeMb:settings.value.downloadSizeLimitMb,existingProjectId:project.id});await loadLibrary(true);if(result.unavailable.length)alert(`${result.unavailable.length} website resources could not be saved. Use Website (online) if the saved copy does not work.`);}catch(e){alert(String(e));}return;}
+
   const redownloadUrl = project.project_json_url?.trim() || project.source_url?.trim() || "";
   if (!redownloadUrl) {
     return;
@@ -266,6 +291,19 @@ async function onRedownload(project: Project) {
 </script>
 
 <template>
+  <div v-if="duplicatesOpen" class="duplicate-overlay" @click.self="duplicatesOpen=false">
+    <section class="duplicate-panel" role="dialog" aria-label="Duplicate finder">
+      <h2>Duplicate finder</h2><button class="btn-secondary" @click="duplicatesOpen=false">Close</button>
+      <p v-if="!duplicates.length">No duplicate files or matching sources found.</p>
+      <section v-for="(group,i) in duplicates" :key="i"><h3>{{group.kind}}</h3>
+        <div v-for="project in group.projects" :key="project.id"><span>{{project.title || project.name}}</span>
+          <button class="btn-secondary" @click="historyProject=project;duplicatesOpen=false">Compare / archive copies</button>
+        </div>
+      </section>
+      <p>Versions and mods can intentionally differ. No files are changed by this scan.</p>
+    </section>
+  </div>
+  <VersionHistory v-if="historyProject" :project="historyProject" @close="historyProject = null" @restored="loadLibrary(true)" />
   <div class="library-view">
     <!-- Toolbar -->
     <div class="toolbar">
@@ -273,12 +311,28 @@ async function onRedownload(project: Project) {
         v-model="search"
         class="search"
         type="text"
-        placeholder="Search projects, use -word to exclude…"
+        placeholder="Search projects"
+        :title="searchHint"
+        aria-label="Search projects"
       />
 
-      <select v-model="tagFilter" class="filter-select" title="Filter by tag">
-        <option value="">All tags</option>
-        <option v-for="tag in allTags" :key="tag" :value="tag">{{ tag }}</option>
+      <select v-model="authorFilter" class="filter-select" title="Filter by original author" aria-label="Author">
+        <option value="">Author</option><option v-for="value in authors" :key="value" :value="value">{{ value }}</option>
+      </select>
+      <select v-model="fandomFilter" class="filter-select" title="Filter by fandom" aria-label="Fandom">
+        <option value="">Fandom</option><option v-for="value in fandoms" :key="value" :value="value">{{ value }}</option>
+      </select>
+      <select v-model="modFilter" class="filter-select" title="Filter adaptations" aria-label="Mods">
+        <option value="">Mods: all</option><option value="original">Originals</option><option value="modded">Modded</option>
+      </select>
+      <select v-if="modFilter === 'modded'" v-model="modderFilter" class="filter-select" title="Filter by modder" aria-label="Modder">
+        <option value="">Modder</option><option v-for="value in modders" :key="value" :value="value">{{ value }}</option>
+      </select>
+      <select v-model="statusFilter" class="filter-select" title="Your saved builds" aria-label="My status">
+        <option value="">My status</option><option value="completed">Completed</option><option value="not-completed">Not completed</option>
+      </select>
+      <select v-model="tagFilter" class="filter-select" title="Optional extra tags" aria-label="Extra tags">
+        <option value="">Extra tags</option><option v-for="tag in allTags" :key="tag" :value="tag">{{ tag }}</option>
       </select>
 
       <select v-model="sort" class="filter-select" title="Sort">
@@ -293,13 +347,14 @@ async function onRedownload(project: Project) {
 
       <div class="toolbar-spacer" />
 
+      <button class="btn-secondary" @click="scanDuplicates">Find duplicates</button>
       <button class="btn-secondary" @click="showBulk = true">Import folder</button>
       <button class="btn-secondary" @click="showDownload = true">Download Project</button>
       <button class="btn-primary" @click="showAdd = true">+ Add Project</button>
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="center-msg">Loading library…</div>
+    <div v-if="loading && !projects.length" class="center-msg">Loading library…</div>
 
     <!-- Error -->
     <div v-else-if="error" class="center-msg error">{{ error }}</div>
@@ -336,6 +391,7 @@ async function onRedownload(project: Project) {
         @open="(vid) => onOpen(p, vid)"
         @toggle-favorite="onToggleFavorite(p)"
         @redownload="onRedownload(p)"
+        @history="historyProject = p"
         @remove="onRemove(p)"
         @remove-disk="onRequestRemoveFromDisk(p)"
         @edit="editTarget = p"
@@ -402,6 +458,9 @@ async function onRedownload(project: Project) {
 </template>
 
 <style scoped>
+.duplicate-overlay {position:fixed;inset:0;background:#0008;z-index:1100;display:grid;place-items:center;}
+.duplicate-panel {background:var(--dialog-bg);border:1px solid var(--border);border-radius:12px;padding:24px;width:min(800px,95vw);max-height:90vh;overflow:auto;}
+.duplicate-panel section div {display:flex;justify-content:space-between;gap:12px;padding:8px;}
 .library-view {
   flex: 1;
   display: flex;
@@ -413,9 +472,10 @@ async function onRedownload(project: Project) {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 14px 20px;
+  gap: 8px;
+  padding: 12px 20px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: sticky;
@@ -425,8 +485,9 @@ async function onRedownload(project: Project) {
 }
 
 .search {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 210px;
+  min-width: 160px;
+  max-width: 360px;
   padding: 7px 12px;
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -439,6 +500,10 @@ async function onRedownload(project: Project) {
 .search:focus { border-color: var(--accent); }
 
 .filter-select {
+  flex: 0 1 auto;
+  min-width: 100px;
+  max-width: 170px;
+  text-overflow: ellipsis;
   padding: 7px 10px;
   background: var(--input-bg);
   border: 1px solid var(--border);

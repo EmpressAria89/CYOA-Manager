@@ -8,6 +8,25 @@
   var scriptPath = "/__cyoa_manager_viewer_overlay.js";
   var templatePath = "/__cyoa_manager_viewer_overlay.html";
   var markupPromise = null;
+  var overlayRoot = null;
+  var overlayTheme = "mocha";
+  var palettes = {
+    mocha: ["#1e1e2e", "#313244", "#45475a", "#585b70", "#cdd6f4", "#a6adc8", "#89b4fa", "dark"],
+    macchiato: ["#24273a", "#363a4f", "#494d64", "#5b6078", "#cad3f5", "#a5adcb", "#8aadf4", "dark"],
+    frappe: ["#303446", "#414559", "#51576d", "#626880", "#c6d0f5", "#a5adce", "#8caaee", "dark"],
+    latte: ["#eff1f5", "#ccd0da", "#bcc0cc", "#acb0be", "#4c4f69", "#6c6f85", "#1e66f5", "light"]
+  };
+
+  function findControl(id) {
+    return overlayRoot ? overlayRoot.getElementById(id) : null;
+  }
+
+  function applyTheme(host) {
+    var colors = palettes[overlayTheme] || palettes.mocha;
+    ["base", "surface", "hover", "border", "text", "subtext", "accent", "scheme"].forEach(function (key, index) {
+      host.style.setProperty("--" + key, colors[index]);
+    });
+  }
 
   function getSupportedAppState() {
     try {
@@ -61,7 +80,7 @@
   }
 
   function ensureMarkup() {
-    if (document.getElementById(buttonId) && document.getElementById(panelId)) {
+    if (findControl(buttonId) && findControl(panelId)) {
       return Promise.resolve();
     }
 
@@ -77,8 +96,14 @@
         return response.text();
       })
       .then(function (markup) {
-        if (!document.getElementById(buttonId) && !document.getElementById(panelId)) {
-          document.body.insertAdjacentHTML("beforeend", markup);
+        if (!findControl(buttonId) && !findControl(panelId)) {
+          var host = document.createElement("div");
+          host.id = "cyoa-manager-cheat-overlay";
+          // Author CSS and CYOA font overrides cannot cross this boundary.
+          overlayRoot = host.attachShadow({ mode: "open" });
+          overlayRoot.innerHTML = markup;
+          applyTheme(host);
+          document.body.appendChild(host);
         }
       })
       .catch(function (_error) {
@@ -89,7 +114,7 @@
   }
 
   function populatePointTypeSelect(appState) {
-    var select = document.getElementById(selectId);
+    var select = findControl(selectId);
     if (!select) {
       return;
     }
@@ -113,8 +138,8 @@
   }
 
   function syncSelectedValue(appState) {
-    var select = document.getElementById(selectId);
-    var input = document.getElementById(inputId);
+    var select = findControl(selectId);
+    var input = findControl(inputId);
     if (!select || !input) {
       return;
     }
@@ -139,8 +164,8 @@
   }
 
   function applyStartingSum(appState) {
-    var select = document.getElementById(selectId);
-    var input = document.getElementById(inputId);
+    var select = findControl(selectId);
+    var input = findControl(inputId);
     if (!select || !input) {
       return;
     }
@@ -209,15 +234,28 @@
   }
 
   function ensurePanel(appState) {
-    var panel = document.getElementById(panelId);
-    var select = document.getElementById(selectId);
-    var input = document.getElementById(inputId);
-    var removeReqsButton = document.getElementById(removeReqsButtonId);
-    var unlimitedChoicesButton = document.getElementById(unlimitedChoicesButtonId);
+    var panel = findControl(panelId);
+    var select = findControl(selectId);
+    var input = findControl(inputId);
+    var removeReqsButton = findControl(removeReqsButtonId);
+    var unlimitedChoicesButton = findControl(unlimitedChoicesButtonId);
     if (!panel || !select || !input || !removeReqsButton || !unlimitedChoicesButton) {
       return;
     }
 
+    var reveal = findControl("manager-reveal-hidden");
+    if(reveal && window.__cyoaManagerNative?.setRevealHidden){
+      reveal.hidden=false;
+      if(!reveal.dataset.cyoaManagerBound){
+        reveal.addEventListener("click",function(){
+          var enabled=reveal.getAttribute("aria-pressed")!=="true";
+          window.__cyoaManagerNative.setRevealHidden(enabled);
+          reveal.setAttribute("aria-pressed",String(enabled));
+          reveal.textContent=enabled?"Hide locked choices":"Show hidden choices";
+        });
+        reveal.dataset.cyoaManagerBound="true";
+      }
+    }
     populatePointTypeSelect(appState);
 
     if (!select.dataset.cyoaManagerBound) {
@@ -281,7 +319,7 @@
   }
 
   function togglePanel() {
-    var panel = document.getElementById(panelId);
+    var panel = findControl(panelId);
     if (!panel) {
       return;
     }
@@ -290,7 +328,7 @@
   }
 
   function ensureButton(appState) {
-    var button = document.getElementById(buttonId);
+    var button = findControl(buttonId);
     if (!button) {
       return;
     }
@@ -324,7 +362,7 @@
 
       ensurePanel(liveAppState);
 
-      var select = document.getElementById(selectId);
+      var select = findControl(selectId);
       if ((select && select.options.length > 0) || attempts > 40) {
         window.clearInterval(timer);
       }
@@ -351,7 +389,12 @@
     return true;
   }
 
-  function startPolling() {
+  async function startPolling() {
+    try {
+      var session = await (await fetch("/__manager_session")).json();
+      if (!session.cheatsEnabled) return;
+      overlayTheme = session.theme || "mocha";
+    } catch (_error) { return; }
     if (tryAttachOverlay()) {
       return;
     }

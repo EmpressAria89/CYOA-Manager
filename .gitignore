@@ -34,3 +34,10 @@ release/
 *.sw?
 cyoas/
 save/
+__pycache__/
+validation/
+
+# Local test evidence and private fixtures
+/tests/results/
+/tests/fixtures/
+/backups/

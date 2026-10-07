@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Project, Viewer } from "../types";
+import { resolveCover } from "../composables/useCover";
 import { resolveViewerId } from "../viewers";
 
 const props = defineProps<{
@@ -18,12 +18,29 @@ const emit = defineEmits<{
   (e: "remove"): void;
   (e: "remove-disk"): void;
   (e: "edit"): void;
+  (e: "history"): void;
   (e: "relink"): void;
   (e: "redownload"): Promise<void> | void;
   (e: "toggle-favorite"): void;
 }>();
 
 const menuOpen = ref(false);
+const menuButton = ref<HTMLButtonElement | null>(null);
+const menuElement = ref<HTMLElement | null>(null);
+const menuPosition = ref({ left: "0px", top: "0px" });
+const cardTitle = computed(() => props.project.title?.trim() || props.project.name);
+const displayTags = computed(() => [...new Set([
+  props.project.fandom,
+  props.project.modder ? `Modder: ${props.project.modder}` : "",
+  props.project.is_mod ? "MOD" : null,
+  ...(props.project.build_count ? [`Completed(${props.project.build_count})`] : []),
+  ...props.project.tags,
+].filter((tag): tag is string => Boolean(tag)))]);
+function isLegacy(viewer: Viewer) {
+  return viewer.id === "icc-original" || viewer.name.toLowerCase() === "icc original";
+}
+const availableViewers = computed(() => props.viewers.filter(viewer =>
+  props.project.kind==='website' ? viewer.id.startsWith('website') : !viewer.id.startsWith('website') && (!isLegacy(viewer) || viewer.id === props.project.viewer_preference)));
 const imageFailed = ref(false);
 const coverImageSrc = ref<string | null>(null);
 const openingSource = ref(false);
@@ -36,13 +53,7 @@ const initials = computed(() => {
   return props.project.name.slice(0, 2).toUpperCase();
 });
 
-const coverColor = computed(() => {
-  // deterministic pastel color from project id
-  let hash = 0;
-  for (const ch of props.project.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  const hue = hash % 360;
-  return `hsl(${hue}, 40%, 35%)`;
-});
+const coverColor = computed(() => "var(--cover-placeholder)");
 
 const selectedViewer = computed(() => {
   return props.viewers.find((viewer) => viewer.id === selectedViewerId.value) ?? null;
@@ -72,11 +83,9 @@ watch(
   async () => {
     imageFailed.value = false;
 
+    if(props.project.cover_image?.startsWith("data:") || props.project.cover_image?.startsWith("http")){coverImageSrc.value=props.project.cover_image;return;}
     try {
-      coverImageSrc.value = await invoke<string | null>("resolve_cover_image_src", {
-        filePath: props.project.file_path,
-        coverImage: props.project.cover_image,
-      });
+      coverImageSrc.value = await resolveCover(props.project.file_path,props.project.cover_image);
     } catch {
       coverImageSrc.value = null;
     }
@@ -93,7 +102,7 @@ watch(
   ],
   () => {
     selectedViewerId.value = resolveViewerId(
-      props.viewers,
+      availableViewers.value,
       props.project.viewer_preference,
       props.defaultViewer,
     );
@@ -101,13 +110,52 @@ watch(
   { immediate: true }
 );
 
-function openMenu() {
-  menuOpen.value = !menuOpen.value;
+function positionMenu() {
+  const anchor = menuButton.value?.getBoundingClientRect();
+  if (!anchor || !menuElement.value) return;
+  const width = menuElement.value.offsetWidth;
+  const height = menuElement.value.offsetHeight;
+  menuPosition.value = {
+    left: `${Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8))}px`,
+    top: `${Math.max(8, Math.min(anchor.bottom + 6, window.innerHeight - height - 8))}px`,
+  };
 }
-
-function closeMenu() {
+async function openMenu() {
+  if (menuOpen.value) return closeMenu();
+  menuOpen.value = true;
+  await nextTick();
+  positionMenu();
+  menuElement.value?.querySelector<HTMLButtonElement>("button")?.focus();
+}
+function closeMenu(restoreFocus = false) {
   menuOpen.value = false;
+  if (restoreFocus) menuButton.value?.focus();
 }
+function dismissMenu(event: PointerEvent) {
+  const target = event.target as Node;
+  if (!menuElement.value?.contains(target) && !menuButton.value?.contains(target)) closeMenu();
+}
+function menuKey(event: KeyboardEvent) {
+  if (event.key === "Escape") { event.preventDefault(); closeMenu(true); return; }
+  if (event.key === "Tab") { closeMenu(); return; }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const buttons = Array.from(menuElement.value?.querySelectorAll<HTMLButtonElement>("button") || []);
+  const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+    : (index + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+  buttons[next]?.focus();
+}
+onMounted(() => {
+  document.addEventListener("pointerdown", dismissMenu);
+  window.addEventListener("resize", positionMenu);
+  window.addEventListener("scroll", positionMenu, true);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", dismissMenu);
+  window.removeEventListener("resize", positionMenu);
+  window.removeEventListener("scroll", positionMenu, true);
+});
 
 function onOpen(viewerId: string) {
   closeMenu();
@@ -155,7 +203,7 @@ async function onRedownload() {
   <div
     class="card"
     :class="{ missing: project.file_missing }"
-    @click.self="closeMenu"
+    @click.self="closeMenu()"
   >
     <!-- Cover -->
     <div class="cover" :style="!coverImageSrc || imageFailed ? { background: coverColor } : {}">
@@ -166,7 +214,7 @@ async function onRedownload() {
         loading="lazy"
         @error="onImageError"
       />
-      <span v-else class="initials">{{ initials }}</span>
+      <span v-else class="initials" :title="`No cover supplied for ${cardTitle}`">{{ initials }}<small>No cover</small></span>
 
       <div v-if="sourceUrl || redownloadUrl" class="source-actions">
         <button
@@ -190,7 +238,8 @@ async function onRedownload() {
       <div v-if="project.file_missing" class="badge missing-badge">File missing</div>
 
       <!-- Menu button -->
-      <button class="menu-btn" @click.stop="openMenu" title="Options">⋮</button>
+      <button ref="menuButton" class="menu-btn" @click.stop="openMenu" @keydown.esc="closeMenu(true)"
+        :aria-expanded="menuOpen" aria-haspopup="menu" aria-label="Project options" title="Options">⋮</button>
       <button
         class="favorite-btn"
         :class="{ active: project.favorite }"
@@ -200,33 +249,26 @@ async function onRedownload() {
         {{ project.favorite ? "♥" : "♡" }}
       </button>
 
-      <!-- Overflow menu -->
-      <div v-if="menuOpen" class="menu" @click.stop>
-        <button @click="emit('edit'); closeMenu()">✏️ Edit</button>
-        <button v-if="project.file_missing" @click="emit('relink'); closeMenu()">
-          🔗 Re-link file
-        </button>
-        <button class="danger" @click="emit('remove'); closeMenu()">🗑 Remove</button>
-        <button class="danger" @click="emit('remove-disk'); closeMenu()">🗑 Remove from disk</button>
-      </div>
+
     </div>
 
     <!-- Info -->
     <div class="info">
-      <h3 class="name" :title="project.name">{{ project.name }}</h3>
+      <h3 class="name" :title="cardTitle">{{ cardTitle }}</h3>
+      <span v-if="project.author" class="author" :title="project.author">{{ project.author }}</span>
 
-      <div v-if="project.tags.length" class="tags">
-        <span v-for="tag in project.tags" :key="tag" class="tag">{{ tag }}</span>
+      <div v-if="displayTags.length" class="tags">
+        <span v-for="tag in displayTags" :key="tag" class="tag">{{ tag }}</span>
       </div>
 
       <!-- Open action -->
       <div class="actions">
-        <template v-if="viewers.length === 0">
+        <template v-if="availableViewers.length === 0">
           <span class="no-viewers">No viewers found</span>
         </template>
         <template v-else>
           <select v-model="selectedViewerId" class="viewer-select">
-            <option v-for="v in viewers" :key="v.id" :value="v.id">{{ v.name }}</option>
+            <option v-for="v in availableViewers" :key="v.id" :value="v.id">{{ v.name }}</option>
           </select>
           <button
             class="btn-open"
@@ -239,6 +281,16 @@ async function onRedownload() {
       </div>
     </div>
   </div>
+  <Teleport to="body">
+    <div v-if="menuOpen" ref="menuElement" class="menu" :style="menuPosition"
+      role="menu" aria-label="Project options" @keydown="menuKey">
+      <button role="menuitem" @click="emit('history'); closeMenu()">Version history</button>
+      <button role="menuitem" @click="emit('edit'); closeMenu()">Edit</button>
+      <button v-if="project.file_missing" role="menuitem" @click="emit('relink'); closeMenu()">Re-link file</button>
+      <button role="menuitem" class="danger" @click="emit('remove'); closeMenu()">Remove from library</button>
+      <button role="menuitem" class="danger" @click="emit('remove-disk'); closeMenu()">Remove from disk</button>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -249,12 +301,11 @@ async function onRedownload() {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition: transform 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s;
   position: relative;
 }
 .card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  border-color: var(--accent);
 }
 .card.missing {
   opacity: 0.7;
@@ -272,13 +323,16 @@ async function onRedownload() {
 .cover img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  padding: 8px;
   display: block;
 }
+.initials small { display:block; font-size:0.7rem; color:var(--muted); margin-top:8px; }
 .initials {
+  text-align:center;
   font-size: 2.5rem;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.8);
+  font-weight: 400;
+  color: var(--muted);
   user-select: none;
 }
 
@@ -289,12 +343,12 @@ async function onRedownload() {
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.7rem;
-  font-weight: 600;
+  font-weight: 400;
 }
 .missing-badge {
   top: 42px;
-  background: #e55;
-  color: #fff;
+  background: var(--danger);
+  color: var(--text);
 }
 
 .source-actions {
@@ -308,31 +362,33 @@ async function onRedownload() {
 
 .source-btn {
   padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.68);
+  background: var(--menu-bg);
   border: none;
   border-radius: 6px;
-  color: #fff;
+  color: var(--text);
   font-size: 0.76rem;
-  font-weight: 600;
+  font-weight: 400;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s, background 0.15s;
 }
 
-.card:hover .source-btn {
+.card:hover .source-btn,
+.card:focus-within .source-btn {
   opacity: 1;
 }
 
 .source-btn.secondary {
-  background: rgba(0, 0, 0, 0.56);
+  background: var(--menu-bg);
 }
 
 .source-btn.busy {
-  background: rgba(18, 122, 96, 0.78);
+  background: var(--accent);
+  color: var(--accent-text);
 }
 
 .source-btn:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.82);
+  background: var(--hover);
 }
 
 .source-btn:disabled {
@@ -343,9 +399,9 @@ async function onRedownload() {
   position: absolute;
   top: 6px;
   right: 6px;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--menu-bg);
   border: none;
-  color: #fff;
+  color: var(--text);
   border-radius: 4px;
   font-size: 1.2rem;
   line-height: 1;
@@ -354,7 +410,8 @@ async function onRedownload() {
   opacity: 0;
   transition: opacity 0.15s;
 }
-.card:hover .menu-btn {
+.card:hover .menu-btn,
+.card:focus-within .menu-btn {
   opacity: 1;
 }
 
@@ -362,9 +419,9 @@ async function onRedownload() {
   position: absolute;
   right: 6px;
   bottom: 6px;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--menu-bg);
   border: none;
-  color: rgba(255, 255, 255, 0.88);
+  color: var(--text);
   border-radius: 999px;
   width: 32px;
   height: 32px;
@@ -383,25 +440,25 @@ async function onRedownload() {
 }
 
 .favorite-btn:hover {
-  background: rgba(0, 0, 0, 0.72);
+  background: var(--hover);
   transform: scale(1.04);
 }
 
 .favorite-btn.active {
-  color: #ff7a8f;
+  color: var(--danger);
 }
 
 .menu {
-  position: absolute;
-  top: 34px;
-  right: 6px;
+  position: fixed;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  z-index: 10;
-  min-width: 150px;
-  overflow: hidden;
+  z-index: 1000;
+  min-width: 190px;
+  overflow-y: auto;
 }
 .menu button {
   display: block;
@@ -414,11 +471,12 @@ async function onRedownload() {
   cursor: pointer;
   font-size: 0.875rem;
 }
-.menu button:hover {
+.menu button:hover,
+.menu button:focus-visible {
   background: var(--hover);
 }
 .menu button.danger {
-  color: #e55;
+  color: var(--danger);
 }
 
 .info {
@@ -431,7 +489,7 @@ async function onRedownload() {
 .name {
   margin: 0;
   font-size: 0.95rem;
-  font-weight: 600;
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -444,8 +502,8 @@ async function onRedownload() {
 .tag {
   background: var(--tag-bg);
   color: var(--tag-color);
-  border-radius: 4px;
-  padding: 1px 7px;
+  border-radius: 999px;
+  padding: 3px 8px;
   font-size: 0.72rem;
 }
 .actions {
@@ -465,6 +523,8 @@ async function onRedownload() {
   font-size: 0.8rem;
   outline: none;
 }
+.viewer-select option { background: var(--input-bg); color: var(--text); }
+.author { color: var(--muted); font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-select:focus {
   border-color: var(--accent);
 }
@@ -473,12 +533,12 @@ async function onRedownload() {
   min-width: 72px;
   padding: 5px 10px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-text);
   border: none;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.8rem;
-  font-weight: 600;
+  font-weight: 400;
   transition: background 0.15s;
 }
 .btn-open:hover:not(:disabled) {

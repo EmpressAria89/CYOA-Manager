@@ -1,9 +1,11 @@
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { PerkIndexStatus, PerkSearchResult, Project, ProjectPatch, Viewer } from "../types";
+import { resolveAuthor } from "./useAuthorAliases";
 import { useSettings } from "./useSettings";
 
-const projects = ref<Project[]>([]);
+const rawProjects = ref<Project[]>([]);
+const projects = computed(() => rawProjects.value.map(project => ({...project, source_author:project.author, author:resolveAuthor(project.author)})));
 const viewers = ref<Viewer[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -24,9 +26,9 @@ export function useLibrary() {
 
     libraryLoadPromise = (async () => {
       try {
-        loading.value = true;
+        loading.value = rawProjects.value.length===0;
         error.value = null;
-        projects.value = await invoke<Project[]>("get_library");
+        rawProjects.value = await invoke<Project[]>("get_library");
         libraryLoaded = true;
       } catch (e: any) {
         error.value = String(e);
@@ -53,7 +55,7 @@ export function useLibrary() {
 
   async function addProject(filePath: string): Promise<Project> {
     const project = await invoke<Project>("add_project", { filePath });
-    projects.value.push(project);
+    rawProjects.value.push(project);
     return project;
   }
 
@@ -122,7 +124,7 @@ export function useLibrary() {
     for (const fp of filePaths) {
       try {
         const p = await invoke<Project>("add_project", { filePath: fp });
-        projects.value.push(p);
+        rawProjects.value.push(p);
         added.push(p);
       } catch (e) {
         console.error("Failed to add:", fp, e);
@@ -133,17 +135,17 @@ export function useLibrary() {
 
   async function removeProject(id: string) {
     await invoke("remove_project", { id });
-    projects.value = projects.value.filter((p) => p.id !== id);
+    rawProjects.value = rawProjects.value.filter((p) => p.id !== id);
   }
 
   async function removeProjectFromDisk(id: string) {
     await invoke("remove_project_from_disk", { id });
-    projects.value = projects.value.filter((p) => p.id !== id);
+    rawProjects.value = rawProjects.value.filter((p) => p.id !== id);
   }
 
   async function clearLibrary() {
     await invoke("clear_library");
-    projects.value = [];
+    rawProjects.value = [];
     libraryLoaded = true;
   }
 
@@ -157,33 +159,33 @@ export function useLibrary() {
 
   async function updateProject(id: string, patch: ProjectPatch): Promise<Project> {
     const updated = await invoke<Project>("update_project", { id, patch });
-    const idx = projects.value.findIndex((p) => p.id === id);
-    if (idx !== -1) projects.value[idx] = updated;
+    const idx = rawProjects.value.findIndex((p) => p.id === id);
+    if (idx !== -1) rawProjects.value[idx] = updated;
     return updated;
   }
 
   function setProjectFavoriteLocally(id: string, favorite: boolean) {
-    const idx = projects.value.findIndex((p) => p.id === id);
+    const idx = rawProjects.value.findIndex((p) => p.id === id);
     if (idx === -1) {
       return;
     }
 
-    projects.value[idx] = {
-      ...projects.value[idx],
+    rawProjects.value[idx] = {
+      ...rawProjects.value[idx],
       favorite,
     };
   }
 
   async function setProjectFavorite(id: string, favorite: boolean): Promise<Project> {
-    const idx = projects.value.findIndex((p) => p.id === id);
-    const previousFavorite = idx === -1 ? null : projects.value[idx].favorite;
+    const idx = rawProjects.value.findIndex((p) => p.id === id);
+    const previousFavorite = idx === -1 ? null : rawProjects.value[idx].favorite;
 
     setProjectFavoriteLocally(id, favorite);
 
     try {
       const updated = await invoke<Project>("set_project_favorite", { id, favorite });
       if (idx !== -1) {
-        projects.value[idx] = updated;
+        rawProjects.value[idx] = updated;
       }
       return updated;
     } catch (error) {
@@ -195,13 +197,13 @@ export function useLibrary() {
   }
 
   function setProjectViewerPreferenceLocally(id: string, viewerId: string) {
-    const idx = projects.value.findIndex((p) => p.id === id);
+    const idx = rawProjects.value.findIndex((p) => p.id === id);
     if (idx === -1) {
       return;
     }
 
-    projects.value[idx] = {
-      ...projects.value[idx],
+    rawProjects.value[idx] = {
+      ...rawProjects.value[idx],
       viewer_preference: viewerId,
     };
   }
@@ -262,7 +264,7 @@ export function useLibrary() {
 
   const allTags = computed(() => {
     const set = new Set<string>();
-    projects.value.forEach((p) => p.tags.forEach((t) => set.add(t)));
+    rawProjects.value.forEach(p=>p.tags.forEach(t=>set.add(t)));
     return [...set].sort();
   });
 

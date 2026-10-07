@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><script>
+(async function(){
+ const nonce=new URLSearchParams(location.search).get('nonce');const builds=[];
+ function read(name){return new Promise(resolve=>{
+  const request=indexedDB.open(name);request.onupgradeneeded=()=>request.transaction.abort();request.onerror=()=>resolve();
+  request.onsuccess=()=>{const db=request.result;if(!db.objectStoreNames.contains('buildStore')){db.close();resolve();return;}
+   const transaction=db.transaction('buildStore','readonly');const cursor=transaction.objectStore('buildStore').openCursor();
+   cursor.onsuccess=()=>{const row=cursor.result;if(!row)return;const value=row.value;
+    const content=typeof value?.app==='string'?value.app:Array.isArray(value?.value)?value.value.join(','):null;
+    if(content!==null)builds.push({name:value.name||value.title||'Recovered build',content,source:name+':'+String(row.key)});row.continue();};
+   transaction.oncomplete=()=>{db.close();resolve();};transaction.onerror=()=>{db.close();resolve();};
+  };
+ });}
+ try{await read('cyoaPlusDB');await read('cyoaDB');if(new URLSearchParams(location.search).has('top')){await fetch('/__manager_legacy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(builds)});}else parent.postMessage({nonce,builds},'*');}catch(e){parent.postMessage({nonce,error:e.message},'*');}
+})();
+</script>

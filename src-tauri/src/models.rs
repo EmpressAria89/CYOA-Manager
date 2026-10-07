@@ -2,8 +2,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectMetadata {
+    pub title: String,
+    pub author: String,
+    pub modder: String,
+    pub kind: String,
+    pub metadata_revision: u32,
+    pub fandom: String,
+    pub completion: String,
+    pub is_mod: bool,
+    pub viewer_check: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    #[serde(flatten)]
+    pub metadata: ProjectMetadata,
+    #[serde(default)]
+    pub build_count: usize,
     pub id: String,
     pub name: String,
     pub description: String,
@@ -41,6 +58,12 @@ impl Default for Library {
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectPatch {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub modder: Option<String>,
+    pub fandom: Option<String>,
+    pub completion: Option<String>,
+    pub is_mod: Option<bool>,
     pub name: Option<String>,
     pub description: Option<String>,
     /// `None` → don't touch; `Some("")` → clear; `Some(url)` → set
@@ -66,6 +89,11 @@ pub struct ViewerSession {
     pub project_id: String,
     pub viewer_id: String,
     pub cheats_enabled: bool,
+    pub file_path: String,
+    pub project_name: String,
+    pub fingerprint: String,
+    pub theme: String,
+    pub cyoa_font: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,3 +124,5 @@ pub struct PerkSearchResult {
 }
 
 pub type SessionStore = Mutex<HashMap<String, ViewerSession>>;
+
+pub type LegacyRecovery = Mutex<Option<Vec<serde_json::Value>>>;

@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, computed } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Project, ProjectPatch, Viewer } from "../types";
+import { useLibrary } from "../composables/useLibrary";
+import { normalizeTags } from "../catalogTags";
 
 const props = defineProps<{
   project: Project;
@@ -13,9 +15,33 @@ const emit = defineEmits<{
   (e: "close"): void;
 }>();
 
-const name = ref(props.project.name);
+const name = ref(props.project.title || props.project.name);
+const author = ref(props.project.author || "");
+const fandom = ref(props.project.fandom || "");
+const modder = ref(props.project.modder || "");
+const playerStatus = computed(() => props.project.build_count ? `Completed(${props.project.build_count})` : "Not completed");
+const isMod = ref(Boolean(props.project.is_mod));
+const { projects } = useLibrary();
+const tagInput = ref("");
+const tags = ref(normalizeTags(props.project.tags));
+const tagSuggestions = computed(() => normalizeTags(projects.value.flatMap(project => project.tags))
+  .filter(tag => !tags.value.some(existing => existing.toLowerCase() === tag.toLowerCase())
+    && tag.toLowerCase().includes(tagInput.value.trim().toLowerCase()))
+  .sort((a, b) => a.localeCompare(b)).slice(0, 8));
+const authors = computed(() => [...new Set(projects.value.map(project => project.author).filter((value): value is string => Boolean(value)))]);
+const modders = computed(() => [...new Set(projects.value.map(project => project.modder).filter((value): value is string => Boolean(value)))]);
+const fandoms = computed(() => [...new Set(projects.value.map(project => project.fandom).filter((value): value is string => Boolean(value)))]);
+function addTag(value = tagInput.value) {
+  for (const tag of normalizeTags(value.split(","))) {
+    if (!tags.value.some(existing => existing.toLowerCase() === tag.toLowerCase())) tags.value.push(tag);
+  }
+  tagInput.value = "";
+}
+function tagKey(event: KeyboardEvent) {
+  if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addTag(); }
+  if (event.key === "Backspace" && !tagInput.value) tags.value.pop();
+}
 const description = ref(props.project.description);
-const tagsRaw = ref(props.project.tags.join(", "));
 const cover = ref(props.project.cover_image ?? "");
 const sourceUrl = ref(props.project.source_url ?? "");
 const viewerPreference = ref(props.project.viewer_preference ?? "");
@@ -25,9 +51,14 @@ const directJsonCopyStatus = ref("");
 
 watch(() => cover.value, () => { coverPreviewError.value = false; });
 watch(() => props.project, (project) => {
-  name.value = project.name;
+  name.value = project.title || project.name;
+  author.value = project.author || "";
+  fandom.value = project.fandom || "";
+  modder.value = project.modder || "";
+  isMod.value = Boolean(project.is_mod);
   description.value = project.description;
-  tagsRaw.value = project.tags.join(", ");
+  tags.value = normalizeTags(project.tags);
+  tagInput.value = "";
   cover.value = project.cover_image ?? "";
   sourceUrl.value = project.source_url ?? "";
   viewerPreference.value = project.viewer_preference ?? "";
@@ -66,17 +97,20 @@ function formatDateAdded(value: string): string {
 }
 
 function save() {
+  addTag();
   const patch: ProjectPatch = {
     name: name.value.trim() || props.project.name,
+    title: name.value.trim() || props.project.name,
+    author: author.value.trim() === props.project.author ? props.project.source_author ?? author.value.trim() : author.value.trim(),
+    fandom: fandom.value.trim(),
+    modder: isMod.value ? modder.value.trim() : "",
+    is_mod: isMod.value,
     description: description.value,
     cover_image: cover.value,
     source_url: sourceUrl.value,
     viewer_preference: viewerPreference.value,
     exclude_from_perk_index: excludeFromPerkIndex.value,
-    tags: tagsRaw.value
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean),
+    tags: normalizeTags(tags.value),
   };
   emit("save", patch);
 }
@@ -84,26 +118,52 @@ function save() {
 
 <template>
   <div class="overlay" @click.self="emit('close')">
-    <div class="dialog">
-      <h2>Edit Project</h2>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="edit-project-title" @keydown.esc="emit('close')">
+      <h2 id="edit-project-title">Edit Project</h2>
 
-      <label>Name
-        <input v-model="name" type="text" placeholder="Project name" />
+      <label>Title
+        <input v-model="name" type="text" placeholder="CYOA title" />
       </label>
 
       <label>Description
         <textarea v-model="description" rows="2" placeholder="Optional description" />
       </label>
 
-      <label>Tags <span class="hint">(comma-separated)</span>
-        <input v-model="tagsRaw" type="text" placeholder="tag1, tag2" />
-      </label>
+      <div class="metadata-grid">
+        <label>Author
+          <input v-model="author" list="project-authors" placeholder="From metadata when available" />
+          <datalist id="project-authors"><option v-for="value in authors" :key="value" :value="value" /></datalist>
+        </label>
+        <label>Fandom / universe
+          <input v-model="fandom" list="project-fandoms" placeholder="e.g. Naruto" />
+          <datalist id="project-fandoms"><option v-for="value in fandoms" :key="value" :value="value" /></datalist>
+        </label>
+        <label>My status
+          <output class="player-status">{{ playerStatus }}</output>
+        </label>
+        <label class="checkbox-row"><input v-model="isMod" type="checkbox" /><span>Mod / adaptation</span></label>
+        <label v-if="isMod" class="modder-field">Modder
+          <input v-model="modder" list="project-modders" placeholder="Who made this adaptation" />
+          <datalist id="project-modders"><option v-for="value in modders" :key="value" :value="value" /></datalist>
+        </label>
+      </div>
+      <div class="tag-editor">
+        <label for="manual-tag">Extra tags <span class="hint">Optional · Enter or comma to add</span></label>
+        <div v-if="tags.length" class="tag-chips">
+          <button v-for="tag in tags" :key="tag" type="button" class="tag-chip" :aria-label="`Remove tag ${tag}`" @click="tags = tags.filter(value => value !== tag)">{{ tag }} <span aria-hidden="true">×</span></button>
+        </div>
+        <input id="manual-tag" v-model="tagInput" placeholder="Add a tag" @keydown="tagKey" @blur="addTag()" />
+        <div v-if="tagInput.trim() && tagSuggestions.length" class="tag-suggestions" aria-label="Suggested tags">
+          <button v-for="tag in tagSuggestions" :key="tag" type="button" @mousedown.prevent @click="addTag(tag)">{{ tag }}</button>
+        </div>
+        <span v-if="project.build_count" class="hint">Completed({{ project.build_count }}) is updated automatically from saved builds.</span>
+      </div>
 
       <label>Preferred viewer
         <select v-model="viewerPreference">
-          <option value="">No preference</option>
-          <option v-for="viewer in viewers" :key="viewer.id" :value="viewer.id">
-            {{ viewer.name }}
+          <option value="">Automatic (ICC2 Plus)</option>
+          <option v-for="viewer in viewers.filter(v => project.kind === 'website' ? v.id.startsWith('website') : !v.id.startsWith('website'))" :key="viewer.id" :value="viewer.id">
+            {{ viewer.id === "icc-original" || viewer.name.toLowerCase() === "icc original" ? "Force ICC Original (legacy)" : viewer.name }}
           </option>
         </select>
       </label>
@@ -191,7 +251,8 @@ label {
 }
 label input,
 label textarea,
-label select {
+label select,
+.tag-editor > input {
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -217,6 +278,16 @@ label select:focus {
   height: 16px;
   margin: 0;
 }
+.player-status { border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text); background: var(--input-bg); }
+.modder-field { grid-column: 1 / -1; }
+label select option { background: var(--input-bg); color: var(--text); }
+.metadata-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.metadata-grid input { min-width: 0; }
+.tag-editor { display: flex; flex-direction: column; gap: 8px; }
+.tag-chips, .tag-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-chip, .tag-suggestions button { border: 1px solid var(--border); background: var(--tag-bg); color: var(--tag-color); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 0.8rem; cursor: pointer; }
+.tag-chip:hover, .tag-suggestions button:hover { border-color: var(--accent); }
+@media (max-width: 480px) { .metadata-grid { grid-template-columns: 1fr; } .dialog { padding: 18px; } }
 .hint {
   font-size: 0.75rem;
   opacity: 0.6;
@@ -255,7 +326,7 @@ label select:focus {
 }
 .copy-status {
   margin-left: 6px;
-  color: lightgreen;
+  color: var(--accent);
 }
 .dialog-actions {
   display: flex;

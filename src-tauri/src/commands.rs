@@ -132,6 +132,7 @@ pub fn get_library(state: State<LibraryState>) -> Result<Vec<Project>, String> {
     let mut lib = state.lock().map_err(|e| e.to_string())?;
     for project in lib.projects.iter_mut() {
         project.file_missing = !Path::new(&project.file_path).exists();
+        project.build_count = crate::builds::count(&project.id);
     }
     Ok(lib.projects.clone())
 }
@@ -144,12 +145,12 @@ pub fn take_library_migration_notice(
     Ok(notice.take())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_project(file_path: String, state: State<LibraryState>) -> Result<Project, String> {
     add_project_from_path(file_path, &state, None, None)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resolve_cover_image_src(
     file_path: String,
     cover_image: Option<String>,
@@ -157,7 +158,7 @@ pub fn resolve_cover_image_src(
     resolve_cover_image_source(&file_path, cover_image.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resolve_local_image_src(image_path: String) -> Result<Option<String>, String> {
     let raw_image_path = image_path.trim();
     if raw_image_path.is_empty() {
@@ -181,16 +182,19 @@ pub fn resolve_local_image_src(image_path: String) -> Result<Option<String>, Str
     Ok(Some(format!("data:{};base64,{}", mime, encoded)))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn compress_library_cover_images(state: State<LibraryState>) -> Result<usize, String> {
     let mut lib = state.lock().map_err(|e| e.to_string())?;
     let mut changed = 0usize;
     let mut updated_projects = Vec::new();
 
     for project in &lib.projects {
+        let recovered = if project.cover_image.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            std::fs::read(&project.file_path).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok()).and_then(|json|extract_cover_image(&json))
+        } else {None};
         let next_cover_image = compress_cover_image_for_library(
             &project.file_path,
-            project.cover_image.as_deref(),
+            project.cover_image.as_deref().filter(|cover|!cover.trim().is_empty()).or(recovered.as_deref()),
             LIBRARY_COVER_IMAGE_MAX_BYTES,
         )?;
 
@@ -598,13 +602,17 @@ fn run_overwrite_catalog_entry(
 
     let library = app.state::<LibraryState>();
     let desired_name = project_name.trim();
-    let overwrite_destination = existing_project_file_path(project_id, &library);
+    let previous = {
+        let lib = library.lock().map_err(|e| e.to_string())?;
+        lib.projects.iter().find(|p| p.id == project_id).cloned()
+            .ok_or_else(|| format!("Project not found: {}", project_id))?
+    };
 
     let (saved_project_path, resolved_source_url) = match download_catalog_website_project_to_destination(
         Some((app, task_id)),
         website_url.trim(),
         desired_name,
-        overwrite_destination.as_deref(),
+        None,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -647,6 +655,16 @@ fn run_overwrite_catalog_entry(
         },
     );
 
+    let differences=crate::update_diff::compare_files(Path::new(&previous.file_path),&saved_project_path)?;
+    if !differences.changed {
+        let _=app.emit("project-update-result",serde_json::json!({"projectName":previous.name,"diff":differences}));
+        let staged=Project{file_path:saved_project_path.to_string_lossy().into_owned(),..previous.clone()};
+        crate::history::remove_retired_files(&staged,&library)?;
+        emit_catalog_import_progress(app.clone(),CatalogImportProgress{task_id:task_id.into(),phase:"done".into(),current:100,total:100,message:"No changes found; kept current version".into(),done:true,success:true,error:None});
+        return Ok(());
+    }
+    let archived=crate::history::snapshot(&previous,"Before changed update")?;
+    crate::history::pin_sessions(app,&previous,&archived)?;
     let project = replace_project_from_path(
         project_id,
         saved_project_path.to_string_lossy().to_string(),
@@ -656,6 +674,9 @@ fn run_overwrite_catalog_entry(
         desired_name,
     )?;
 
+    crate::history::remove_retired_files(&previous,&library)?;
+    crate::history::apply_retention(app,project_id)?;
+    let _=app.emit("project-update-result",serde_json::json!({"projectName":project.name,"diff":differences}));
     let max_project_size_bytes = max_project_size_mb.saturating_mul(1024 * 1024);
     ensure_project_within_size_limit(&project.id, max_project_size_bytes, &library)?;
 
@@ -2310,39 +2331,13 @@ fn is_direct_project_json_url(url: &tauri::Url) -> bool {
 }
 
 fn detect_default_viewer_preference(json: &serde_json::Value) -> Option<String> {
-    if is_icc_plus_project(json) {
+    if crate::metadata::icc2_compatible(json) {
         Some(slugify("ICC2 Plus"))
+    } else if json["rows"].as_array().is_some_and(|r|r.iter().any(|r|r["perks"].is_array())) {
+        Some("om1cr0n".into())
     } else {
         None
     }
-}
-
-fn is_icc_plus_project(json: &serde_json::Value) -> bool {
-    let Some(root) = json.as_object() else {
-        return false;
-    };
-
-    let Some(version) = root.get("version").and_then(|value| value.as_str()) else {
-        return false;
-    };
-
-    looks_like_icc_plus_version(version)
-        && root.get("rows").and_then(|value| value.as_array()).is_some()
-        && root.get("styling").map(|value| value.is_object()).unwrap_or(false)
-}
-
-fn looks_like_icc_plus_version(version: &str) -> bool {
-    let mut segments = version.split('.');
-    let first = segments.next().filter(|segment| !segment.is_empty());
-    let second = segments.next().filter(|segment| !segment.is_empty());
-
-    if first.is_none() || second.is_none() {
-        return false;
-    }
-
-    version
-        .split('.')
-        .all(|segment| !segment.is_empty() && segment.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn add_project_from_path(
@@ -2370,9 +2365,11 @@ fn add_project_from_path(
     let viewer_preference = detect_default_viewer_preference(&json);
 
     let project = Project {
+        metadata: crate::metadata::infer(&json, &name),
+        build_count: 0,
         id: Uuid::new_v4().to_string(),
         name,
-        description: String::new(),
+        description: crate::metadata::description(&json),
         cover_image,
         source_url,
         project_json_url,
@@ -2443,20 +2440,20 @@ fn replace_project_from_path(
         updated.viewer_preference = detected_viewer_preference;
     }
 
+    let inferred=crate::metadata::infer(&json, &updated.name);
+    if updated.metadata.title.is_empty(){updated.metadata.title=inferred.title;}
+    if updated.metadata.author.is_empty(){updated.metadata.author=inferred.author;}
+    if updated.metadata.fandom.is_empty(){updated.metadata.fandom=inferred.fandom;}
+    if updated.metadata.completion.is_empty(){updated.metadata.completion=inferred.completion;}
+    updated.metadata.viewer_check=inferred.viewer_check;
+    let description = crate::metadata::description(&json);
+    if updated.description.is_empty() { updated.description = description; }
     persist_project(&updated)?;
     lib.projects[index] = updated.clone();
     if let Err(error) = sync_index_for_project_if_present(&updated) {
         eprintln!("Failed to update perk index after overwrite: {}", error);
     }
     Ok(updated)
-}
-
-fn existing_project_file_path(project_id: &str, state: &State<LibraryState>) -> Option<PathBuf> {
-    let lib = state.lock().ok()?;
-    lib.projects
-        .iter()
-        .find(|project| project.id == project_id)
-        .map(|project| PathBuf::from(&project.file_path))
 }
 
 fn removable_project_target_path(project_file_path: &Path) -> PathBuf {
@@ -2567,6 +2564,12 @@ pub fn update_project(
 
     let mut updated = lib.projects[index].clone();
 
+    if let Some(v) = patch.title { updated.metadata.title = v; }
+    if let Some(v) = patch.author { updated.metadata.author = v; }
+    if let Some(v) = patch.modder { updated.metadata.modder = v; }
+    if let Some(v) = patch.fandom { updated.metadata.fandom = v; }
+    if let Some(v) = patch.completion { updated.metadata.completion = v; }
+    if let Some(v) = patch.is_mod { updated.metadata.is_mod = v; }
     if let Some(name) = patch.name {
         updated.name = name;
     }
@@ -2597,7 +2600,7 @@ pub fn update_project(
         updated.exclude_from_perk_index = exclude_from_perk_index;
     }
     if let Some(tags) = patch.tags {
-        updated.tags = tags;
+        updated.tags = crate::metadata::normalize_tags(&tags);
     }
     if let Some(fp) = patch.file_path {
         updated.file_missing = !Path::new(&fp).exists();
@@ -2752,6 +2755,12 @@ fn apply_oversize_project_action_internal(
         return Ok(project.clone());
     }
 
+    let previous = {
+        let lib = state.lock().map_err(|e| e.to_string())?;
+        lib.projects.iter().find(|p| p.id == id).cloned()
+            .ok_or_else(|| format!("Project not found: {}", id))?
+    };
+    crate::history::snapshot(&previous, "Before image conversion")?;
     let bytes = std::fs::read(&project_path)
         .map_err(|e| format!("Failed to read project file: {}", e))?;
 
@@ -2802,7 +2811,7 @@ fn apply_oversize_project_action_internal(
     lib.projects[index] = updated.clone();
     Ok(updated)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_project_json(id: String, state: State<LibraryState>) -> Result<String, String> {
     let lib = state.lock().map_err(|e| e.to_string())?;
     let project = lib
@@ -2815,7 +2824,7 @@ pub fn get_project_json(id: String, state: State<LibraryState>) -> Result<String
 
 // ─── File Discovery ───────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn scan_folder(folder: String) -> Vec<String> {
     use walkdir::WalkDir;
 
@@ -2996,34 +3005,73 @@ pub fn get_viewers(app: tauri::AppHandle) -> Vec<Viewer> {
             }
         }
     }
+    viewers.push(Viewer{id:"website".into(),name:"Website (saved copy)".into()});
+    viewers.push(Viewer{id:"website-live".into(),name:"Website (online)".into()});
     viewers
 }
 
-#[tauri::command]
+fn reader_window_size(app: &tauri::AppHandle) -> (f64,f64) {
+    let monitor=app.get_webview_window("main").and_then(|window|window.current_monitor().ok().flatten());
+    monitor.map(|monitor|((1200.0_f64).min(monitor.size().width as f64/monitor.scale_factor()*0.9),(800.0_f64).min(monitor.size().height as f64/monitor.scale_factor()*0.85))).unwrap_or((1200.0,800.0))
+}
+
+#[tauri::command(async)]
 pub fn open_viewer_window(
     app: tauri::AppHandle,
     project_id: String,
     viewer_id: String,
     project_name: String,
     cheats_enabled: bool,
+    version_id: Option<String>,
     sessions: State<SessionStore>,
 ) -> Result<(), String> {
-    let label = format!("viewer-{}", &Uuid::new_v4().to_string()[..8]);
+    let (reader_width,reader_height)=reader_window_size(&app);
+    let is_website=viewer_id=="website";
+    let label = format!("{}-{}", if viewer_id.starts_with("website"){"website"}else{"viewer"}, &Uuid::new_v4().to_string()[..8]);
 
+    let file_path = if let Some(version_id) = version_id {
+        crate::history::versions_for(&project_id)?.into_iter().find(|v|v.id==version_id)
+            .ok_or("Archived version not found")?.project.file_path
+    } else {
+        let library = app.state::<LibraryState>();
+        let lib = library.lock().map_err(|e| e.to_string())?;
+        lib.projects.iter().find(|p| p.id == project_id)
+            .ok_or_else(|| "Project not found".to_string())?.file_path.clone()
+    };
+    if viewer_id=="website-live" {
+        let source=if Path::new(&file_path).parent().and_then(Path::parent).is_some_and(|p|p.join("files.zip").is_file()){crate::archive_storage::with_files(Path::new(&file_path),||Ok(crate::websites::read(Path::new(&file_path))?.url))?}else{crate::websites::read(Path::new(&file_path))?.url};let url=tauri::Url::parse(&source).map_err(|e|e.to_string())?;
+        let app=app.clone();std::thread::spawn(move||{let _=tauri::WebviewWindowBuilder::new(&app,&label,tauri::WebviewUrl::External(url)).title(&project_name).inner_size(reader_width,reader_height).maximized(false).fullscreen(false).background_color(crate::preferences::background_color(&crate::preferences::load().theme)).build();});return Ok(());
+    }
+    // Register the archive reader while holding the same lock used by cache retirement.
+    let mut session_store = sessions.lock().map_err(|e|e.to_string())?;
+    let fingerprint = if Path::new(&file_path).parent().and_then(Path::parent).is_some_and(|p|p.join("files.zip").is_file()){crate::archive_storage::with_files(Path::new(&file_path),||crate::builds::fingerprint(Path::new(&file_path)))?}else{crate::builds::fingerprint(Path::new(&file_path))?};
+    let preferences = crate::preferences::load();
+    let background=crate::preferences::background_color(&preferences.theme);
     {
-        let mut store = sessions.lock().map_err(|e| e.to_string())?;
-        store.insert(
+        session_store.insert(
             label.clone(),
             ViewerSession {
-                project_id,
+                project_id: project_id.clone(),
                 viewer_id,
                 cheats_enabled,
+                file_path,
+                project_name: project_name.clone(),
+                fingerprint: fingerprint.clone(),
+                theme: preferences.theme,
+                cyoa_font: preferences.cyoa_font,
             },
         );
     }
 
-    let url = tauri::Url::parse("cyoaview://localhost/index.html").map_err(|e| e.to_string())?;
+    drop(session_store);
+    let url = tauri::Url::parse(&format!("cyoaview://{}-{}/index.html", &project_id, &fingerprint[..12])).map_err(|e| e.to_string())?;
 
+    if !is_website && app.state::<crate::models::LegacyRecovery>().lock().map_err(|e|e.to_string())?.is_none() {
+        let recovery_label=format!("recovery-{}",Uuid::new_v4());
+        let copy=sessions.lock().map_err(|e|e.to_string())?.get(&label).cloned().ok_or("Session missing")?;
+        sessions.lock().map_err(|e|e.to_string())?.insert(recovery_label.clone(),copy);
+        let recovery_app=app.clone();std::thread::spawn(move||{let _=tauri::WebviewWindowBuilder::new(&recovery_app,&recovery_label,tauri::WebviewUrl::CustomProtocol(tauri::Url::parse("cyoaview://localhost/__manager_recovery.html?top=1").unwrap())).visible(false).build();});
+    }
     let app_for_thread = app.clone();
     let label_for_thread = label.clone();
     let project_name_for_thread = project_name.clone();
@@ -3033,13 +3081,24 @@ pub fn open_viewer_window(
             &label_for_thread,
             tauri::WebviewUrl::CustomProtocol(url),
         )
+        .background_color(background)
         .title(&project_name_for_thread)
-        .inner_size(1920.0, 1080.0)
-        .maximized(true)
+        .inner_size(reader_width,reader_height)
+        .maximized(false)
+        .fullscreen(false)
         .zoom_hotkeys_enabled(true)
         .build()
         {
-            let _ = window;
+            let cleanup_app = app_for_thread.clone();
+            let cleanup_label = label_for_thread.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed) {
+                    if let Ok(mut store) = cleanup_app.state::<SessionStore>().lock() {
+                        store.remove(&cleanup_label);
+                    }
+                    let copy=cleanup_app.clone();std::thread::spawn(move||{if let Err(e)=crate::history::release_archive_cache(&copy){eprintln!("Archive cache cleanup: {e}");}});
+                }
+            });
         }
     });
 
@@ -4431,9 +4490,9 @@ fn extract_cover_image(json: &serde_json::Value) -> Option<String> {
             return Some(img.to_string());
         }
     }
-    // Scan first few rows for an image
+    // Prefer row artwork; older exports can place their first image well below the introduction.
     if let Some(rows) = json.get("rows").and_then(|r| r.as_array()) {
-        for row in rows.iter().take(5) {
+        for row in rows {
             if let Some(img) = row.get("image").and_then(|v| v.as_str()) {
                 if !img.is_empty() {
                     return Some(img.to_string());
@@ -4441,7 +4500,19 @@ fn extract_cover_image(json: &serde_json::Value) -> Option<String> {
             }
         }
     }
-    None
+    // Some authors put all illustrations on choices, rather than their rows.
+    json.get("rows").and_then(|rows|rows.as_array()).into_iter().flatten()
+        .filter_map(|row|row.get("objects").and_then(|objects|objects.as_array())).flatten()
+        .filter_map(|choice|choice.get("image").and_then(|image|image.as_str()))
+        .find(|image|!image.trim().is_empty()).map(str::to_string)
+}
+
+fn compress_thumbnail(source:&[u8],max_bytes:usize)->Option<Vec<u8>>{
+ let mut image=flatten_alpha(image::load_from_memory(source).ok()?.thumbnail(512,512));
+ loop{for quality in [85,75,65,55]{let mut bytes=Vec::new();if JpegEncoder::new_with_quality(&mut bytes,quality).encode_image(&image).is_ok()&&bytes.len()<=max_bytes{return Some(bytes);}}
+  if image.width()<=32&&image.height()<=32{return None;}
+  image=image.thumbnail((image.width()*3/4).max(1),(image.height()*3/4).max(1));
+ }
 }
 
 fn compress_cover_image_for_library(
@@ -4460,7 +4531,7 @@ fn compress_cover_image_for_library(
     if raw_cover_image.starts_with("data:") {
         if let Some((_, bytes)) = parse_data_uri_image(raw_cover_image) {
             if bytes.len() > max_bytes {
-                if let Some(compressed) = compress_image_to_jpeg_limit(&bytes, max_bytes) {
+                if let Some(compressed) = compress_thumbnail(&bytes, max_bytes) {
                     let encoded = base64::engine::general_purpose::STANDARD.encode(compressed);
                     return Ok(Some(format!("data:image/jpeg;base64,{}", encoded)));
                 }
@@ -4480,7 +4551,7 @@ fn compress_cover_image_for_library(
         return Ok(Some(raw_cover_image.to_string()));
     }
 
-    if let Some(compressed) = compress_image_to_jpeg_limit(&bytes, max_bytes) {
+    if let Some(compressed) = compress_thumbnail(&bytes, max_bytes) {
         let encoded = base64::engine::general_purpose::STANDARD.encode(compressed);
         return Ok(Some(format!("data:image/jpeg;base64,{}", encoded)));
     }
@@ -4529,6 +4600,8 @@ pub fn viewers_base_dir(_app_handle: Option<&tauri::AppHandle>) -> std::path::Pa
 
         // Probe common packaging layouts across platforms.
         let mut candidates = vec![
+            exe_dir.parent().unwrap_or(exe_dir).join("viewers"),
+            exe_dir.parent().unwrap_or(exe_dir).join("lib").join("CYOA Manager").join("viewers"),
             exe_dir.join("viewers"),
             exe_dir.join("_up_").join("public").join("viewers"),
             exe_dir.join("resources").join("viewers"),
@@ -4590,3 +4663,6 @@ pub fn sync_library(state: &State<LibraryState>) {
         *lib = fresh;
     }
 }
+
+#[cfg(test)]
+include!("../../tests/rust/commands.rs");

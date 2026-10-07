@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { ref, watch, onMounted } from "vue";
 import { useSettings } from "../composables/useSettings";
 import { useLibrary } from "../composables/useLibrary";
 
 const { settings, applyTheme } = useSettings();
 const { viewers, clearLibrary, compressLibraryCoverImages } = useLibrary();
+const fonts = ref<string[]>([]);
+onMounted(async () => { fonts.value = await invoke<string[]>("get_fonts"); });
 const clearingLibrary = ref(false);
 const compressingLibraryCovers = ref(false);
 const libraryActionError = ref<string | null>(null);
@@ -61,12 +64,22 @@ async function onCompressLibraryCovers() {
 
     <section class="section">
       <h2>Appearance</h2>
+      <datalist id="available-fonts"><option v-for="font in fonts" :key="font" :value="font" /></datalist>
+      <label class="row"><span>Manager font</span><input v-model="settings.managerFont" list="available-fonts" placeholder="system-ui" /></label>
+      <label class="row"><span>Manager text size (px)</span><input v-model.number="settings.managerFontSize" type="number" min="12" max="24" step="1" /></label>
+      <p class="hint">Applies immediately to the library, settings and other manager pages. Default: 16 px.</p>
+      <label class="row"><span>CYOA font override</span><input v-model="settings.cyoaFont" list="available-fonts" placeholder="Author’s original font" /></label>
+      <p class="hint">The CYOA override applies when a viewer opens. Leave it empty to use the author’s styling.</p>
+      <label class="row"><span>Unstarred archive versions to keep</span><select v-model.number="settings.archiveLimit"><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option></select></label>
+      <p class="hint">Starred archives are never automatically removed. Retention runs after a successful changed update.</p>
       <label class="row">
         <span>Theme</span>
         <select v-model="settings.theme">
           <option value="system">System default</option>
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
+          <option value="latte">Catppuccin Latte</option>
+          <option value="frappe">Catppuccin Frappé</option>
+          <option value="macchiato">Catppuccin Macchiato</option>
+          <option value="mocha">Catppuccin Mocha</option>
         </select>
       </label>
     </section>
@@ -77,7 +90,7 @@ async function onCompressLibraryCovers() {
         <span>Default viewer</span>
         <select v-model="settings.defaultViewer">
           <option :value="null">Automatic</option>
-          <option v-for="v in viewers" :key="v.id" :value="v.id">{{ v.name }}</option>
+          <option v-for="v in viewers.filter(v => v.id !== 'icc-original' && !v.id.startsWith('website'))" :key="v.id" :value="v.id">{{ v.name }}</option>
         </select>
       </label>
       <p class="hint">
@@ -91,7 +104,7 @@ async function onCompressLibraryCovers() {
         Toggle the in-viewer cheat overlay menu.
       </p>
       <label class="row">
-        <span>Download size limit (MB)</span>
+        <span>Large-project threshold (MB)</span>
         <input
           v-model.number="settings.downloadSizeLimitMb"
           type="number"
@@ -101,14 +114,15 @@ async function onCompressLibraryCovers() {
         />
       </label>
       <p class="hint">
-        Projects larger than this threshold trigger the oversize handling rule below.
+        Large ICC downloads use the rule below. Saved websites use this value as a download cap. Thumbnails and archives are optimized automatically.
       </p>
       <label class="row">
-        <span>Oversize default action</span>
+        <span>Large-project action</span>
         <select v-model="settings.oversizeDefaultAction">
           <option value="ask">Ask</option>
-          <option value="keep-separate">Images Separate</option>
-          <option value="compress">Compress</option>
+          <option value="do-nothing">Keep original artwork</option>
+          <option value="keep-separate">Separate images (lossless)</option>
+          <option value="compress">Reduce artwork quality (lossy)</option>
         </select>
       </label>
     </section>
@@ -117,14 +131,14 @@ async function onCompressLibraryCovers() {
     <section class="section danger-section">
       <h2>Library Maintenance</h2>
       <p class="hint">
-        Compress stored library card covers to keep each one at or below 60 KB.
+        Card thumbnails are optimized automatically, up to 60 KiB each. Archives use verified lossless ZIP compression; original artwork stays unchanged.
       </p>
       <button
         class="btn-secondary"
         :disabled="compressingLibraryCovers || clearingLibrary"
         @click="onCompressLibraryCovers"
       >
-        {{ compressingLibraryCovers ? "Compressing..." : "Compress library cover images" }}
+        {{ compressingLibraryCovers ? "Compressing..." : "Optimize thumbnails now" }}
       </button>
       <p class="hint">
         Clear the saved library index without deleting the underlying project files.
@@ -171,7 +185,7 @@ h1 {
 }
 .section h2 {
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -206,7 +220,7 @@ h1 {
   min-width: 180px;
   cursor: pointer;
 }
-.row input[type="number"] {
+.row input:not([type="checkbox"]) {
   padding: 7px 10px;
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -216,7 +230,7 @@ h1 {
   outline: none;
   min-width: 120px;
 }
-.row input[type="number"]:focus { border-color: var(--accent); }
+.row input:not([type="checkbox"]):focus { border-color: var(--accent); }
 .row select:focus { border-color: var(--accent); }
 .hint {
   margin: 8px 0 0;
@@ -228,13 +242,13 @@ h1 {
   padding-top: 4px;
 }
 .btn-danger {
-  background: #c53a3a;
-  color: #fff;
+  background: var(--danger);
+  color: var(--accent-text);
   border: none;
   border-radius: 8px;
   padding: 8px 14px;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 400;
   cursor: pointer;
 }
 .btn-secondary {
@@ -244,11 +258,11 @@ h1 {
   border-radius: 8px;
   padding: 8px 14px;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 400;
   cursor: pointer;
 }
 .btn-danger:hover:not(:disabled) {
-  background: #aa2f2f;
+  filter: brightness(0.9);
 }
 .btn-danger:disabled {
   opacity: 0.55;
