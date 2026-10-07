@@ -1,4 +1,4 @@
-# CYOA Manager — Linux
+# CYOA Manager — Linux // AI Coded
 
 The [EmpressAria89 fork](https://github.com/EmpressAria89/CYOA-Manager) is a **Linux-only fork** of [alexncode/CYOA-Manager](https://github.com/alexncode/CYOA-Manager), focused on a local CYOA library, readable themes, identified builds and preserved editions.
 
