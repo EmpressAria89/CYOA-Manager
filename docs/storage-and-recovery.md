@@ -23,6 +23,10 @@ Edition history is not a substitute for a full backup. Archives protect against 
 
 ## Recover archives
 
+**Add copy to library** creates a separate card using the archived edition's name and assets. It preserves the current card and the archive. Repeating the operation reuses the unchanged restored copy. Restored copies are marked **Archived edition** and cannot be re-downloaded; update the current main card instead.
+
+Use **Rename edition** to change one edition's name, **Rename archive group** to label its collection, and **Move edition** to correct its collection or create a new one. Group labels do not rename library cards. Manual organization does not trigger retention cleanup. Close an archived reader before moving that edition.
+
 `files.zip` is lossless and paired with SHA-256 checksums. Opening/restoring verifies extraction. Corruption stops extraction/retirement; altered cache contents are preserved. Starred editions and currently open editions are excluded from automatic retention cleanup.
 
 Before using an older executable that expects loose archive files, close the app and preview extraction:

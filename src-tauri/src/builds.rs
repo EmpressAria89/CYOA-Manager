@@ -76,6 +76,12 @@ pub fn count(project_id: &str) -> usize {
     fs::read_dir(root).map(|entries| entries.flatten().filter(|e| e.path().extension().is_some_and(|x|x=="json")).count()).unwrap_or(0)
 }
 pub fn copy_associated_builds(source_id: &str, target_id: &str, target_name: &str) -> Result<(), String> {
+    copy_builds(source_id, target_id, target_name, None)
+}
+pub fn copy_edition_builds(source_id: &str, target_id: &str, target_name: &str, fingerprint: &str) -> Result<(), String> {
+    copy_builds(source_id, target_id, target_name, Some(fingerprint))
+}
+fn copy_builds(source_id: &str, target_id: &str, target_name: &str, fingerprint: Option<&str>) -> Result<(), String> {
     let root=library::data_root_dir().join("save/builds");
     let source=root.join(source_id); let target=root.join(target_id);
     if !source.exists() {return Ok(());}
@@ -85,6 +91,7 @@ pub fn copy_associated_builds(source_id: &str, target_id: &str, target_name: &st
         if path.extension().and_then(|e|e.to_str())!=Some("json") {continue;}
         let mut build: Build=serde_json::from_slice(&fs::read(&path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         if build.project_id!=source_id {return Err("Build source identity mismatch".into());}
+        if fingerprint.is_some_and(|value| value != build.fingerprint) { continue; }
         build.project_id=target_id.into();build.project_name=target_name.into();
         let destination=target.join(path.file_name().ok_or("Build filename missing")?);
         if destination.exists() {continue;}

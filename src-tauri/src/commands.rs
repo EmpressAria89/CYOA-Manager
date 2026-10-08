@@ -314,6 +314,7 @@ pub fn start_overwrite_catalog_entry(
     zip_url: String,
     project_name: String,
     max_project_size_mb: u64,
+    force_update: Option<bool>,
 ) -> Result<String, String> {
     let task_id = task_id.trim().to_string();
     if task_id.is_empty() {
@@ -325,6 +326,12 @@ pub fn start_overwrite_catalog_entry(
         return Err("Missing project id".to_string());
     }
 
+    {
+        let state = app.state::<LibraryState>();
+        let library = state.lock().map_err(|e|e.to_string())?;
+        let project = library.projects.iter().find(|p|p.id==project_id).ok_or("Project not found")?;
+        if !force_update.unwrap_or(false) { crate::history::ensure_current_edition(project)?; }
+    }
     let app_handle = app.clone();
     let task_id_for_thread = task_id.clone();
     let limit_mb = max_project_size_mb.clamp(1, 2000);
@@ -338,6 +345,7 @@ pub fn start_overwrite_catalog_entry(
             zip_url,
             project_name,
             limit_mb,
+            force_update.unwrap_or(false),
         ) {
             emit_catalog_import_progress(
                 app_handle,
@@ -585,6 +593,7 @@ fn run_overwrite_catalog_entry(
     zip_url: String,
     project_name: String,
     max_project_size_mb: u64,
+    force_update: bool,
 ) -> Result<(), String> {
     emit_catalog_import_progress(
         app.clone(),
@@ -607,6 +616,8 @@ fn run_overwrite_catalog_entry(
         lib.projects.iter().find(|p| p.id == project_id).cloned()
             .ok_or_else(|| format!("Project not found: {}", project_id))?
     };
+
+    if !force_update { crate::history::ensure_current_edition(&previous)?; }
 
     let (saved_project_path, resolved_source_url) = match download_catalog_website_project_to_destination(
         Some((app, task_id)),
@@ -655,15 +666,22 @@ fn run_overwrite_catalog_entry(
         },
     );
 
+    let downloaded:serde_json::Value=serde_json::from_slice(&std::fs::read(&saved_project_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    if let Err(error)=crate::metadata::validate_update(&downloaded){
+        let staged=Project{file_path:saved_project_path.to_string_lossy().into_owned(),..previous.clone()};
+        crate::history::remove_retired_files(&staged,&library)?;
+        return Err(error);
+    }
     let differences=crate::update_diff::compare_files(Path::new(&previous.file_path),&saved_project_path)?;
-    if !differences.changed {
+    if !differences.changed && !force_update {
+        {let mut lib=library.lock().map_err(|e|e.to_string())?;let current=lib.projects.iter_mut().find(|p|p.id==project_id).ok_or("Project not found")?;crate::metadata::fill_missing(current,&downloaded);persist_project(current)?;}
         let _=app.emit("project-update-result",serde_json::json!({"projectName":previous.name,"diff":differences}));
         let staged=Project{file_path:saved_project_path.to_string_lossy().into_owned(),..previous.clone()};
         crate::history::remove_retired_files(&staged,&library)?;
         emit_catalog_import_progress(app.clone(),CatalogImportProgress{task_id:task_id.into(),phase:"done".into(),current:100,total:100,message:"No changes found; kept current version".into(),done:true,success:true,error:None});
         return Ok(());
     }
-    let archived=crate::history::snapshot(&previous,"Before changed update")?;
+    let archived=crate::history::snapshot(&previous,if force_update {"Before forced update"} else {"Before changed update"})?;
     crate::history::pin_sessions(app,&previous,&archived)?;
     let project = replace_project_from_path(
         project_id,
@@ -2440,14 +2458,8 @@ fn replace_project_from_path(
         updated.viewer_preference = detected_viewer_preference;
     }
 
-    let inferred=crate::metadata::infer(&json, &updated.name);
-    if updated.metadata.title.is_empty(){updated.metadata.title=inferred.title;}
-    if updated.metadata.author.is_empty(){updated.metadata.author=inferred.author;}
-    if updated.metadata.fandom.is_empty(){updated.metadata.fandom=inferred.fandom;}
-    if updated.metadata.completion.is_empty(){updated.metadata.completion=inferred.completion;}
-    updated.metadata.viewer_check=inferred.viewer_check;
-    let description = crate::metadata::description(&json);
-    if updated.description.is_empty() { updated.description = description; }
+    crate::metadata::fill_missing(&mut updated,&json);
+    updated.metadata.restored_from_archive=false;
     persist_project(&updated)?;
     lib.projects[index] = updated.clone();
     if let Err(error) = sync_index_for_project_if_present(&updated) {

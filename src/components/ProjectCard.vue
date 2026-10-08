@@ -65,6 +65,7 @@ const sourceUrl = computed(() => {
 });
 
 const redownloadUrl = computed(() => {
+  if (props.project.restored_from_archive) return null;
   const raw = props.project.project_json_url || props.project.source_url;
   return raw && raw.trim() ? raw : null;
 });
@@ -226,6 +227,7 @@ async function onRedownload() {
           Open Source
         </button>
         <button
+          v-if="redownloadUrl"
           class="source-btn secondary"
           :class="{ busy: isRedownloading }"
           :disabled="isRedownloading || openingSource"
@@ -257,6 +259,7 @@ async function onRedownload() {
       <h3 class="name" :title="cardTitle">{{ cardTitle }}</h3>
       <span v-if="project.author" class="author" :title="project.author">{{ project.author }}</span>
 
+      <span v-if="project.restored_from_archive" class="tag" title="Restored archive edition; re-download is disabled to preserve this version">Archived edition</span>
       <div v-if="displayTags.length" class="tags">
         <span v-for="tag in displayTags" :key="tag" class="tag">{{ tag }}</span>
       </div>

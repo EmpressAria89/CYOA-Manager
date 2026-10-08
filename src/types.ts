@@ -1,4 +1,5 @@
 export interface Project {
+  restored_from_archive?: boolean;
   title?: string;
   author?: string;
   source_author?: string;

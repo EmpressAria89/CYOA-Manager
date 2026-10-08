@@ -14,6 +14,7 @@ pub struct ProjectMetadata {
     pub completion: String,
     pub is_mod: bool,
     pub viewer_check: String,
+    pub restored_from_archive: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {

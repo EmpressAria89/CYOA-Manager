@@ -94,6 +94,7 @@ export function useLibrary() {
     zipUrl: string,
     projectName: string,
     maxProjectSizeMb: number,
+    forceUpdate = false,
   ): Promise<string> {
     return invoke<string>("start_overwrite_catalog_entry", {
       taskId,
@@ -102,6 +103,7 @@ export function useLibrary() {
       zipUrl,
       projectName,
       maxProjectSizeMb,
+      forceUpdate,
     });
   }
 

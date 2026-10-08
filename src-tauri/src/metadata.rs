@@ -33,8 +33,8 @@ pub fn infer(json: &Value, name: &str) -> ProjectMetadata {
     if author.is_empty() { author = author_from_name.trim().into(); }
     let mut fandom = text(json, &["fandom", "universe"]);
     if fandom.is_empty() {
-        let lower = title.to_lowercase();
-        for (needle, label) in [("naruto", "Naruto"), ("bleach", "Bleach"), ("fire emblem", "Fire Emblem"), ("nasu", "Nasuverse"), ("dxd", "High School DxD"), ("cyberpunk", "Cyberpunk"), ("re:zero", "Re:Zero"), ("re-zero", "Re:Zero"), ("god of war", "God of War"), ("game of thrones", "Game of Thrones"), ("final fantasy", "Final Fantasy")] {
+        let lower = format!("{} {}",title,name).to_lowercase();
+        for (needle, label) in [("dragon age", "Dragon Age"), ("type-moon", "Type-Moon"), ("warcraft", "Warcraft"), ("a song of ice and fire", "A Song of Ice and Fire"), ("naruto", "Naruto"), ("bleach", "Bleach"), ("fire emblem", "Fire Emblem"), ("nasu", "Nasuverse"), ("dxd", "High School DxD"), ("cyberpunk", "Cyberpunk"), ("re:zero", "Re:Zero"), ("re-zero", "Re:Zero"), ("god of war", "God of War"), ("game of thrones", "Game of Thrones"), ("final fantasy", "Final Fantasy")] {
             if lower.contains(needle) { fandom = label.into(); break; }
         }
     }
@@ -44,7 +44,7 @@ pub fn infer(json: &Value, name: &str) -> ProjectMetadata {
     let viewer_check = if icc2_compatible(json) { "ICC2 Plus format check passed" } else if json["rows"].as_array().is_some_and(|r| r.iter().any(|r| r["perks"].is_array())) { "Om1cr0n format" } else { "ICC2 Plus format needs review; legacy viewer available" };
     let (author, inferred_modder)=split_credits(&author);
     let explicit_modder=text(json,&["modder","modAuthor"]);
-    ProjectMetadata { title, author, modder: if explicit_modder.is_empty(){inferred_modder}else{explicit_modder}, kind:String::new(),metadata_revision:2,fandom, completion, is_mod, viewer_check: viewer_check.into() }
+    ProjectMetadata { title, author, modder: if explicit_modder.is_empty(){inferred_modder}else{explicit_modder}, kind:String::new(),metadata_revision:2,fandom, completion, is_mod, viewer_check: viewer_check.into(), restored_from_archive: false }
 }
 pub fn split_credits(value:&str)->(String,String){
     let re=regex::Regex::new(r"(?i)^(.+?)\s*[-–—]\s*(.+?)\s*\(mod\)\s*$").unwrap();
@@ -63,6 +63,24 @@ pub fn normalize_project(project:&mut Project){
     project.tags=normalize_tags(&project.tags).into_iter().filter(|tag|!redundant.contains(&tag.to_lowercase())&&!(project.metadata.is_mod&&tag=="MOD")).collect();
     project.metadata.metadata_revision=2;
 }
+/// Fill absent source fields while preserving user labels, credits and archive identity.
+pub fn fill_missing(project:&mut Project,json:&Value) {
+    let mut inferred=infer(json,&project.name);
+    if inferred.fandom.is_empty(){inferred.fandom=infer(&serde_json::json!({}),&project.metadata.title).fandom;}
+    if project.metadata.title.trim().is_empty(){project.metadata.title=inferred.title;}
+    if project.metadata.author.trim().is_empty(){project.metadata.author=inferred.author;}
+    if project.metadata.modder.trim().is_empty(){project.metadata.modder=inferred.modder;}
+    if project.metadata.fandom.trim().is_empty(){project.metadata.fandom=inferred.fandom;}
+    if project.description.trim().is_empty(){project.description=description(json);}
+    project.metadata.viewer_check=inferred.viewer_check;
+}
+/// Reject empty source stubs before any edition is replaced, including forced updates.
+pub fn validate_update(json:&Value)->Result<(),String>{
+    if !json["rows"].as_array().is_some_and(|rows|rows.iter().any(|r|r["objects"].as_array().or_else(||r["perks"].as_array()).is_some_and(|c|!c.is_empty()))) {
+        return Err("Downloaded project has no choices; the existing edition was kept. Check the Source URL.".into());
+    }
+    Ok(())
+}
 #[tauri::command]
 pub async fn enrich_library_metadata(app: tauri::AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -70,7 +88,15 @@ pub async fn enrich_library_metadata(app: tauri::AppHandle) -> Result<usize, Str
         let projects = state.lock().map_err(|e| e.to_string())?.projects.clone();
         let mut changed = 0;
         for project in projects {
-            if project.metadata.metadata_revision>=2 && !project.metadata.title.is_empty(){continue;}
+            if project.metadata.metadata_revision>=2 && !project.metadata.title.is_empty(){
+                if !project.metadata.fandom.trim().is_empty(){continue;}
+                // Existing cards need only the inexpensive title fallback, not a full artwork-heavy JSON read.
+                let fandom=infer(&serde_json::json!({}),&format!("{} {}",project.metadata.title,project.name)).fandom;
+                if fandom.is_empty(){continue;}
+                let mut lib=state.lock().map_err(|e|e.to_string())?;
+                if let Some(current)=lib.projects.iter_mut().find(|p|p.id==project.id){if current.metadata.fandom.trim().is_empty(){current.metadata.fandom=fandom;library::update_project(current)?;changed+=1;}}
+                continue;
+            }
             let inferred=if project.metadata.title.is_empty() || project.metadata.viewer_check.is_empty(){
                 let Ok(bytes)=std::fs::read(&project.file_path) else{continue};let Ok(json)=serde_json::from_slice::<Value>(&bytes) else{continue};Some((infer(&json,&project.name),description(&json)))
             }else{None};

@@ -13,6 +13,7 @@ pnpm test:ui
 |---|---|
 | `rust/` | Archive integrity/retention, asset preservation, build identity, update diffs, metadata, aliases, website snapshots and viewer gates |
 | `smoke-ui.cjs` | Palettes, menus and archive open/star/move/restore |
+| `check-archive-management.cjs` | Starred-only Archives, group/edition naming, reassignment, separate restored cards, refreshed library, re-download protection and confirmed Force update |
 | `check-ui-revision.cjs` | Fonts, cover fitting, metadata editor, structured filters, tags and website import warnings |
 | `check-author-aliases.cjs` | Persistent additive aliases, catalog/library filters and preserved source credits on edit |
 | `check-viewer-dock.cjs` | Narrow/wide viewport placement and isolation from authored CSS |

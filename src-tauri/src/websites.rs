@@ -63,8 +63,13 @@ fn download(url:&str,_title:&str,directory:&Path,max_bytes:u64)->Result<Snapshot
 }
 pub fn read(path:&Path)->Result<Snapshot,String>{serde_json::from_slice(&fs::read(path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())}
 #[tauri::command]
-pub async fn download_website(app:tauri::AppHandle,url:String,title:String,author:String,fandom:String,description:String,max_size_mb:u64,existing_project_id:Option<String>)->Result<WebsiteDownload,String>{
+pub async fn download_website(app:tauri::AppHandle,url:String,title:String,author:String,fandom:String,description:String,max_size_mb:u64,existing_project_id:Option<String>,force_update:Option<bool>)->Result<WebsiteDownload,String>{
  tauri::async_runtime::spawn_blocking(move||{
+  if let Some(id)=&existing_project_id {
+   let state=app.state::<LibraryState>();let library=state.lock().map_err(|e|e.to_string())?;
+   let project=library.projects.iter().find(|p| &p.id==id).ok_or("Website project not found")?;
+   if !force_update.unwrap_or(false){crate::history::ensure_current_edition(project)?;}
+  }
   let directory=library::cyoas_dir().join(format!("website-{}",uuid::Uuid::new_v4()));
   let mut staging=Staging(directory.clone(),false);
   let snapshot=match download(&url,&title,&directory,max_size_mb.max(1).saturating_mul(1024*1024)){Ok(v)=>v,Err(e)=>{let _=fs::remove_dir_all(&directory);return Err(e);}};
@@ -75,8 +80,9 @@ pub async fn download_website(app:tauri::AppHandle,url:String,title:String,autho
   project.file_path=directory.join("project.json").to_string_lossy().into_owned();
   if let Some(previous)=&previous {
    let diff=crate::update_diff::compare_files(Path::new(&previous.file_path),Path::new(&project.file_path))?;
-   if !diff.changed{crate::history::remove_retired_files(&project,&state)?;let _=app.emit("project-update-result",serde_json::json!({"projectName":previous.name,"diff":diff}));return Ok(WebsiteDownload{project:previous.clone(),unavailable:snapshot.unavailable});}
-   let version=crate::history::snapshot(previous,"Before changed website update")?;crate::history::pin_sessions(&app,previous,&version)?;
+   if !diff.changed&&!force_update.unwrap_or(false){crate::history::remove_retired_files(&project,&state)?;let _=app.emit("project-update-result",serde_json::json!({"projectName":previous.name,"diff":diff}));return Ok(WebsiteDownload{project:previous.clone(),unavailable:snapshot.unavailable});}
+   let version=crate::history::snapshot(previous,if force_update.unwrap_or(false){"Before forced website update"}else{"Before changed website update"})?;crate::history::pin_sessions(&app,previous,&version)?;
+   project.metadata.restored_from_archive=false;
    library::update_project(&project)?;let mut lib=state.lock().map_err(|e|e.to_string())?;if let Some(p)=lib.projects.iter_mut().find(|p|p.id==project.id){*p=project.clone();}drop(lib);
    crate::history::remove_retired_files(previous,&state)?;crate::history::apply_retention(&app,&project.id)?;let _=app.emit("project-update-result",serde_json::json!({"projectName":project.name,"diff":diff}));
   }else{library::insert_project(&project)?;state.lock().map_err(|e|e.to_string())?.projects.push(project.clone());}

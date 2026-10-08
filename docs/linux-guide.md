@@ -34,6 +34,14 @@ Enable cheats in Settings to open the reader's **Cheat Menu**. ICC2 Plus offers 
 
 Archiving moves an edition out of the library; open or restore it directly from **Archives**. An older library copy can be archived under its newer counterpart. Manager-owned duplicate files are retired only after a verified archive copy; external source files are preserved.
 
+**Add copy to library** restores a separate card with the archived edition's own name, leaving the main card and archive intact. Restored cards show **Archived edition** and cannot be re-downloaded. Rename individual editions or archive groups, and use **Move edition** to correct a misplaced archive. Group labels do not rename library cards.
+
+The **Archives** tab lists starred editions only. Unstarred automatic backups stay on disk and remain accessible through a library card's **Version history**. Unstarring an edition hides it from Archives; it does not immediately delete it.
+
+**Edit → Force update** explicitly allows replacing an older restored card from its source. Confirming saves the form edits and archives the current edition before replacement. Normal re-download stays blocked for restored cards. Empty downloaded projects are rejected even when forcing an update.
+
+Re-download fills missing title, author, modder, fandom and description from the source, including when the project file is otherwise unchanged. Nonempty edited fields are preserved. Missing fandoms also use known title fallbacks, including Dragon Age; absent source metadata cannot reliably identify every universe.
+
 Re-download stages the replacement and compares choices, fields and local assets. Changes archive the previous edition and show a difference report. Identical downloads keep the current edition; failed downloads leave it intact. **Find duplicates** reports identical exports and likely matches without deleting them.
 
 Keep 3, 4 or 5 ordinary editions per CYOA. Starred and currently open editions are protected. Archives use verified lossless ZIP compression. Opening or restoring extracts a verified copy; idle extraction caches are removed on close or subsequent maintenance.

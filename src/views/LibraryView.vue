@@ -223,8 +223,14 @@ async function onToggleFavorite(project: Project) {
   await setProjectFavorite(project.id, !project.favorite);
 }
 
-async function onRedownload(project: Project) {
-  if(project.kind==='website' && project.source_url){try{const result=await invoke<{unavailable:string[]}>("download_website",{url:project.source_url,title:project.title||project.name,author:project.source_author||project.author||"",fandom:project.fandom||"",description:project.description,maxSizeMb:settings.value.downloadSizeLimitMb,existingProjectId:project.id});await loadLibrary(true);if(result.unavailable.length)alert(`${result.unavailable.length} website resources could not be saved. Use Website (online) if the saved copy does not work.`);}catch(e){alert(String(e));}return;}
+async function onForceUpdate(project: Project, patch: ProjectPatch) {
+  if (activeRedownloadTaskId) { alert("A re-download is already in progress."); return; }
+  if (!confirm("Force update this card from its source? Your current edition will be archived first. This can replace an older restored edition with the latest release. The edits in this form will be saved.")) return;
+  try { const updated=await updateProject(project.id,patch);editTarget.value=null;await onRedownload(updated,true); } catch(e) { alert(String(e)); }
+}
+async function onRedownload(project: Project, forceUpdate = false) {
+  if (project.restored_from_archive && !forceUpdate) { alert("This is a restored archive edition. Re-download the current main card instead."); return; }
+  if(project.kind==='website' && project.source_url){try{const result=await invoke<{unavailable:string[]}>("download_website",{url:project.source_url,title:project.title||project.name,author:project.source_author||project.author||"",fandom:project.fandom||"",description:project.description,maxSizeMb:settings.value.downloadSizeLimitMb,existingProjectId:project.id,forceUpdate});await loadLibrary(true);if(result.unavailable.length)alert(`${result.unavailable.length} website resources could not be saved. Use Website (online) if the saved copy does not work.`);}catch(e){alert(String(e));}return;}
 
   const redownloadUrl = project.project_json_url?.trim() || project.source_url?.trim() || "";
   if (!redownloadUrl) {
@@ -262,6 +268,7 @@ async function onRedownload(project: Project) {
 
       if (payload.success) {
         redownloadStatus.value = null;
+        await invoke("enrich_catalog_metadata").catch(console.error);
         await loadLibrary(true);
         return;
       }
@@ -278,6 +285,7 @@ async function onRedownload(project: Project) {
       "",
       project.name,
       settings.value.downloadSizeLimitMb,
+      forceUpdate,
     );
   } catch (redownloadError) {
     activeRedownloadTaskId = "";
@@ -421,6 +429,7 @@ async function onRedownload(project: Project) {
     :project="editTarget"
     :viewers="viewers"
     @save="(patch) => onEdit(editTarget!, patch)"
+    @force-update="(patch) => onForceUpdate(editTarget!, patch)"
     @close="editTarget = null"
   />
   <RelinkDialog

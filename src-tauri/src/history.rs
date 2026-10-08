@@ -183,6 +183,7 @@ pub async fn list_archives() -> Result<Vec<Version>, String> {
 }
 #[tauri::command]
 pub fn star_version(id: String, version_id: String, starred: bool) -> Result<(), String> {
+    let _edit = ARCHIVE_EDITS.lock().map_err(|e|e.to_string())?;
     let mut version = versions_for(&id)?.into_iter().find(|v|v.id==version_id).ok_or("Version not found")?;
     version.starred=starred; save_version(&version)
 }
@@ -210,7 +211,7 @@ pub async fn reconcile_imported_archives(app: tauri::AppHandle) -> Result<usize,
         for version in all_versions()? {
             if !version.reason.starts_with("Imported library copy:") { continue; }
             let candidates=state.lock().map_err(|e|e.to_string())?.projects.clone();
-            for source in candidates.iter().filter(|p|p.id!=version.project.id && p.name==version.project.name) {
+            for source in candidates.iter().filter(|p|p.id!=version.project.id && !p.metadata.restored_from_archive && p.name==version.project.name) {
                 let matches=crate::archive_storage::with_files(Path::new(&version.project.file_path),||Ok(crate::builds::fingerprint(Path::new(&source.file_path))?==crate::builds::fingerprint(Path::new(&version.project.file_path))? && crate::assets::manifest(Path::new(&source.file_path))?==crate::assets::manifest(Path::new(&version.project.file_path))?))?;
                 if !matches{continue;}
                 crate::builds::copy_associated_builds(&source.id,&version.project.id,&version.project.name)?;
@@ -237,33 +238,161 @@ pub async fn list_versions(id: String) -> Result<Vec<Version>, String> {
         Ok(result)
     }).await.map_err(|e| e.to_string())?
 }
+pub fn ensure_current_edition(project: &Project) -> Result<(), String> {
+    if project.metadata.restored_from_archive { return Err("This is a restored archive edition. Re-download the current main card instead.".into()); }
+    Ok(())
+}
+// Restoration creates an independent card; archives and active editions are never replaced.
+fn restored_copy(version: &Version, directory: &Path) -> Result<Project, String> {
+    let path = crate::archive_storage::with_files(Path::new(&version.project.file_path), || copy_project(&version.project, directory))?;
+    let mut project = version.project.clone();
+    project.id = Uuid::new_v4().to_string();
+    project.file_path = path.to_string_lossy().into_owned();
+    project.file_missing = false;
+    project.date_added = chrono::Utc::now().to_rfc3339();
+    project.build_count = 0;
+    project.metadata.restored_from_archive = true;
+    Ok(project)
+}
 #[tauri::command]
 pub async fn restore_version(app: tauri::AppHandle, id: String, version_id: String) -> Result<Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _edit = ARCHIVE_EDITS.lock().map_err(|e| e.to_string())?;
         let state = app.state::<LibraryState>();
-        let current = find_project(&id, &state).ok();
-        let path = history_dir(&id)?.join(key(&version_id)?).join("version.json");
-        let version: Version = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let root = history_dir(&id)?.join(key(&version_id)?);
+        let version = read_version(&root)?;
         if version.project.id != id { return Err("Version belongs to another CYOA".into()); }
-        if let Some(current) = &current { let saved=snapshot(current, "Before restore")?; pin_sessions(&app,current,&saved)?; }
+        let fingerprint = crate::archive_storage::with_files(Path::new(&version.project.file_path), || crate::builds::fingerprint(Path::new(&version.project.file_path)))?;
+        // Retrying the same restore returns its existing, unchanged library copy.
+        if let Ok(bytes) = fs::read(root.join("restored-library.json")) {
+            let previous: String = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let existing = state.lock().map_err(|e| e.to_string())?.projects.iter().find(|p| p.id == previous).cloned();
+            if let Some(existing) = existing {
+                if existing.name == version.project.name && existing.metadata.title == version.project.metadata.title && crate::builds::fingerprint(Path::new(&existing.file_path)).ok().as_deref() == Some(fingerprint.as_str()) {
+                    let matches = crate::archive_storage::with_files(Path::new(&version.project.file_path), || Ok(crate::assets::manifest(Path::new(&existing.file_path))? == crate::assets::manifest(Path::new(&version.project.file_path))?))?;
+                    if matches { return Ok(existing); }
+                }
+            }
+        }
         let directory = library::cyoas_dir().join(format!("restored-{}", Uuid::new_v4()));
-        let restored_path = crate::archive_storage::with_files(Path::new(&version.project.file_path),||copy_project(&version.project, &directory))?;
-        // Keep card identity, favorites and personal metadata; replace only version contents and cover.
-        let mut restored = current.clone().unwrap_or_else(|| version.project.clone());
-        if restored.metadata.kind!=version.project.metadata.kind {restored.metadata.kind=version.project.metadata.kind.clone();restored.viewer_preference=version.project.viewer_preference.clone();}
-        restored.file_path = restored_path.to_string_lossy().into_owned();
-        restored.cover_image = version.project.cover_image;
-        restored.file_missing = false;
-        let mut lib = state.lock().map_err(|e| e.to_string())?;
-        if let Some(index)=lib.projects.iter().position(|p|p.id==id) {
-            library::update_project(&restored)?; lib.projects[index]=restored.clone();
-        } else { library::insert_project(&restored)?; lib.projects.push(restored.clone()); }
-        drop(lib);
-        if let Some(current)=&current {remove_retired_files(current,&state)?;}
-        apply_retention(&app,&id)?;
-        if let Err(e) = crate::perk_index::sync_index_for_project_if_present(&restored) { eprintln!("Perk index refresh failed: {e}"); }
-        Ok(restored)
+        let result = (|| {
+            let mut restored = restored_copy(&version, &directory)?;
+            crate::builds::copy_edition_builds(&id, &restored.id, &restored.name, &fingerprint)?;
+            restored.build_count = crate::builds::count(&restored.id);
+            let mut lib = state.lock().map_err(|e| e.to_string())?;
+            library::insert_project(&restored)?;
+            lib.projects.push(restored.clone());
+            drop(lib);
+            // A failed receipt write must not report failure after the card was added.
+            if let Err(e) = write_json(&root.join("restored-library.json"), &restored.id) { eprintln!("Restore receipt: {e}"); }
+            if let Err(e) = crate::perk_index::sync_index_for_project_if_present(&restored) { eprintln!("Perk index refresh failed: {e}"); }
+            Ok(restored)
+        })();
+        if result.is_err() { let _ = fs::remove_dir_all(directory); }
+        result
     }).await.map_err(|e| e.to_string())?
+}
+
+static ARCHIVE_EDITS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn read_version(root: &Path) -> Result<Version, String> {
+    serde_json::from_slice(&fs::read(root.join("version.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+}
+fn write_json(file: &Path, value: &impl Serialize) -> Result<(), String> {
+    fs::create_dir_all(file.parent().ok_or("Missing metadata directory")?).map_err(|e|e.to_string())?;
+    let temporary = file.with_extension(format!("{}.pending", Uuid::new_v4()));
+    fs::write(&temporary, serde_json::to_vec_pretty(value).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    fs::rename(temporary, file).map_err(|e|e.to_string())
+}
+fn archive_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 200 || name.chars().any(char::is_control) { return Err("Enter a name of 1–200 characters".into()); }
+    Ok(name.into())
+}
+#[derive(Serialize, Deserialize)]
+struct GroupLabel { name: String }
+#[tauri::command]
+pub async fn list_archive_groups() -> Result<Vec<Project>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut groups = std::collections::BTreeMap::new();
+        for version in all_versions()? {
+            let mut project = version.project;
+            if groups.contains_key(&project.id) { continue; }
+            let label = history_dir(&project.id)?.join("group.json");
+            if label.exists() {
+                let label: GroupLabel = serde_json::from_slice(&fs::read(label).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+                project.name = label.name.clone(); project.metadata.title = label.name;
+            }
+            groups.insert(project.id.clone(), project);
+        }
+        Ok(groups.into_values().collect())
+    }).await.map_err(|e|e.to_string())?
+}
+#[tauri::command]
+pub fn rename_archive_group(id: String, name: String) -> Result<(), String> {
+    let _edit = ARCHIVE_EDITS.lock().map_err(|e|e.to_string())?;
+    write_json(&history_dir(&id)?.join("group.json"), &GroupLabel { name: archive_name(&name)? })
+}
+#[tauri::command]
+pub fn rename_archive_version(id: String, version_id: String, name: String) -> Result<(), String> {
+    let _edit = ARCHIVE_EDITS.lock().map_err(|e|e.to_string())?;
+    let mut version = read_version(&history_dir(&id)?.join(key(&version_id)?))?;
+    if version.project.id != id { return Err("Version belongs to another CYOA".into()); }
+    let name = archive_name(&name)?;
+    version.project.name = name.clone(); version.project.metadata.title = name;
+    save_version(&version)
+}
+// Copy/verify/publish before retiring the old location. Interrupted transfers keep a recoverable copy.
+fn relocate_version_at(version: &Version, source: &Path, destination: &Path, target_id: &str) -> Result<Version, String> {
+    let mut moved = version.clone();
+    moved.project.id = target_id.into();
+    moved.project.file_path = destination.join("files").join(Path::new(&version.project.file_path).file_name().ok_or("Missing project filename")?).to_string_lossy().into_owned();
+    let temporary = destination.with_file_name(format!(".pending-move-{}", version.id));
+    if destination.exists() {
+        let from: String = serde_json::from_slice(&fs::read(destination.join("transfer-from.json")).map_err(|_| "Destination already contains this edition")?).map_err(|e|e.to_string())?;
+        if from != version.project.id || crate::builds::fingerprint(&source.join("files.zip"))? != crate::builds::fingerprint(&destination.join("files.zip"))? { return Err("Destination contains a conflicting edition".into()); }
+        moved = read_version(destination)?;
+    } else {
+        if temporary.exists() { return Err("An interrupted transfer needs review; both original and pending files were retained".into()); }
+        let result = (|| {
+            copy_tree(source, &temporary)?;
+            crate::archive_storage::pack(&temporary, true)?;
+            write_json(&temporary.join("version.json"), &moved)?;
+            write_json(&temporary.join("transfer-from.json"), &version.project.id)?;
+            fs::rename(&temporary, destination).map_err(|e|e.to_string())
+        })();
+        if result.is_err() { let _ = fs::remove_dir_all(temporary); }
+        result?;
+    }
+    let retired = source.with_file_name(format!(".moved-{}", version.id));
+    fs::rename(source, &retired).map_err(|e|e.to_string())?;
+    if let Err(e) = fs::remove_dir_all(retired) { eprintln!("Retired transfer cache retained: {e}"); }
+    Ok(moved)
+}
+#[tauri::command]
+pub async fn move_archive_version(app: tauri::AppHandle, id: String, version_id: String, target_id: Option<String>, new_group_name: Option<String>) -> Result<Version, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _edit = ARCHIVE_EDITS.lock().map_err(|e|e.to_string())?;
+        let target = match target_id { Some(target) => { key(&target)?; target }, None => Uuid::new_v4().to_string() };
+        if target == id { return Err("Choose another archive group".into()); }
+        let source = history_dir(&id)?.join(key(&version_id)?);
+        let destination = history_dir(&target)?.join(&version_id);
+        if !source.exists() && destination.exists() {
+            let from: String = serde_json::from_slice(&fs::read(destination.join("transfer-from.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            if from == id { return read_version(&destination); }
+        }
+        let version = read_version(&source)?;
+        if version.project.id != id { return Err("Version belongs to another CYOA".into()); }
+        let state = app.state::<crate::models::SessionStore>();
+        let sessions = state.lock().map_err(|e|e.to_string())?;
+        if sessions.values().any(|s|s.file_path==version.project.file_path) { return Err("Close this archived edition's reader before moving it".into()); }
+        let fingerprint = crate::archive_storage::with_files(Path::new(&version.project.file_path), || crate::builds::fingerprint(Path::new(&version.project.file_path)))?;
+        crate::builds::copy_edition_builds(&id, &target, &version.project.name, &fingerprint)?;
+        if let Some(name) = new_group_name { write_json(&history_dir(&target)?.join("group.json"), &GroupLabel { name: archive_name(&name)? })?; }
+        let moved = relocate_version_at(&version, &source, &destination, &target)?;
+        drop(sessions);
+        // Manual organization must never trigger retention deletion in the destination.
+        Ok(moved)
+    }).await.map_err(|e|e.to_string())?
 }
 
 pub fn release_archive_cache(app:&tauri::AppHandle)->Result<(),String>{

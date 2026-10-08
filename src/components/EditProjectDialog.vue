@@ -13,6 +13,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "save", patch: ProjectPatch): void;
   (e: "close"): void;
+  (e: "force-update", patch: ProjectPatch): void;
 }>();
 
 const name = ref(props.project.title || props.project.name);
@@ -96,7 +97,7 @@ function formatDateAdded(value: string): string {
   return parsed.toLocaleString();
 }
 
-function save() {
+function save(force = false) {
   addTag();
   const patch: ProjectPatch = {
     name: name.value.trim() || props.project.name,
@@ -112,7 +113,7 @@ function save() {
     exclude_from_perk_index: excludeFromPerkIndex.value,
     tags: normalizeTags(tags.value),
   };
-  emit("save", patch);
+  if(force) emit("force-update", patch); else emit("save", patch);
 }
 </script>
 
@@ -208,8 +209,9 @@ function save() {
       </div>
 
       <div class="dialog-actions">
+        <button class="force-update" :disabled="!sourceUrl.trim()" @click="save(true)">Force update</button>
         <button class="btn-secondary" @click="emit('close')">Cancel</button>
-        <button class="btn-primary" @click="save">Save</button>
+        <button class="btn-primary" @click="save()">Save</button>
       </div>
     </div>
   </div>
@@ -335,3 +337,5 @@ label select option { background: var(--input-bg); color: var(--text); }
   margin-top: 4px;
 }
 </style>
+
+<style scoped>.force-update{margin-right:auto;background:var(--danger,#f38ba8);color:var(--bg,#1e1e2e);border:1px solid var(--danger,#f38ba8);border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}.force-update:disabled{opacity:.45;cursor:default}</style>
