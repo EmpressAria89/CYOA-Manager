@@ -39,6 +39,7 @@ assert not tauri['app']['windows'][0].get('maximized', False)
 assert not tauri['app']['windows'][0].get('fullscreen', False)
 workflow = (ROOT / '.github/workflows/linux.yml').read_text()
 assert 'ubuntu-24.04' in workflow and not re.search(r'windows-latest|macos-latest|release-multi-platform', workflow)
+assert workflow.index('run: pnpm release:linux') < workflow.index('run: pnpm test:rust'), 'Build frontendDist before Rust tests embed it'
 for script in [ROOT / 'scripts/launch-linux.sh']:
     subprocess.run(['bash', '-n', str(script)], check=True)
 with tempfile.TemporaryDirectory(prefix='cyoa-source-check-') as temp:
