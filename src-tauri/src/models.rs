@@ -15,6 +15,7 @@ pub struct ProjectMetadata {
     pub is_mod: bool,
     pub viewer_check: String,
     pub restored_from_archive: bool,
+    pub font_preference: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -59,6 +60,7 @@ impl Default for Library {
 
 #[derive(Debug, Deserialize)]
 pub struct ProjectPatch {
+    pub font_preference: Option<String>,
     pub title: Option<String>,
     pub author: Option<String>,
     pub modder: Option<String>,
@@ -87,6 +89,7 @@ pub struct Viewer {
 
 #[derive(Debug, Clone)]
 pub struct ViewerSession {
+    pub font_preference: String,
     pub project_id: String,
     pub viewer_id: String,
     pub cheats_enabled: bool,

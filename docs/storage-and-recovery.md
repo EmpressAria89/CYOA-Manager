@@ -7,6 +7,7 @@ Release data defaults to `$XDG_DATA_HOME/cyoa-manager/`, or `~/.local/share/cyoa
 | `cyoas/` | Manager-owned project files and local assets |
 | `save/library.sqlite3` | Library identities, source credits, tags and metadata |
 | `save/preferences.json` | Theme, fonts and archive retention |
+| `save/reader-settings.json` | Global and per-CYOA text sections, layout and hidden-section preferences |
 | `save/author-aliases.json` | Preferred author names and all retained aliases |
 | `save/builds/<project-id>/` | Identified builds and recovery records |
 | `save/versions/<project-id>/<version-id>/` | Edition metadata, checksums and lossless archive ZIP |
@@ -41,4 +42,9 @@ Alias settings are written atomically. A successful change keeps the previous ma
 
 ## Local workspace snapshots
 
-Historical snapshots and private test reports must stay outside the entire development workspace. The local recovery directory is `$XDG_DATA_HOME/cyoa-manager/backups/workspace-history-2026-10-07/` (normally under `~/.local/share/`). Its `checkpoints/README.md` indexes the preserved snapshots. The workspace `backups/README.md` is only a location pointer. Never stage recovery material, runtime data or private reports.
+Historical snapshots and private test reports must stay outside the entire development workspace. The local recovery directory is `$XDG_DATA_HOME/cyoa-manager/backups/workspace-history-2026-10-07/` (normally under `~/.local/share/`). Its `checkpoints/README.md` indexes the preserved snapshots. The workspace `backups/README.md` indexes recovery locations and the current audit resume record. Never stage recovery material, runtime data or private reports.
+
+
+Library storage failures block manager commands and show the storage error; the app does not continue writing an empty fallback library. Preserve the original files, repair access/storage or restore a verified snapshot to staging, then restart. Do not clear or recreate the library to dismiss the error.
+
+Settings and builds use temporary files and rename; archives verify hashes before retiring loose copies. These mechanisms limit partial-operation damage but do not guarantee persistence after sudden power loss. Keep a verified backup on another physical device for disk failure recovery.

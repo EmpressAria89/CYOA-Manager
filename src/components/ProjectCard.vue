@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, nextTick, onBeforeUnmount } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Project, Viewer } from "../types";
 import { resolveCover } from "../composables/useCover";
@@ -81,14 +81,17 @@ const redownloadText = computed(() => {
 
 watch(
   () => [props.project.file_path, props.project.cover_image],
-  async () => {
+  async (_value, _previous, onCleanup) => {
+    let current = true;
+    onCleanup(() => { current = false; });
     imageFailed.value = false;
 
     if(props.project.cover_image?.startsWith("data:") || props.project.cover_image?.startsWith("http")){coverImageSrc.value=props.project.cover_image;return;}
     try {
-      coverImageSrc.value = await resolveCover(props.project.file_path,props.project.cover_image);
+      const source = await resolveCover(props.project.file_path,props.project.cover_image);
+      if (current) coverImageSrc.value = source;
     } catch {
-      coverImageSrc.value = null;
+      if (current) coverImageSrc.value = null;
     }
   },
   { immediate: true }
@@ -124,12 +127,14 @@ function positionMenu() {
 async function openMenu() {
   if (menuOpen.value) return closeMenu();
   menuOpen.value = true;
+  attachMenuListeners();
   await nextTick();
   positionMenu();
   menuElement.value?.querySelector<HTMLButtonElement>("button")?.focus();
 }
 function closeMenu(restoreFocus = false) {
   menuOpen.value = false;
+  detachMenuListeners();
   if (restoreFocus) menuButton.value?.focus();
 }
 function dismissMenu(event: PointerEvent) {
@@ -147,16 +152,17 @@ function menuKey(event: KeyboardEvent) {
     : (index + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
   buttons[next]?.focus();
 }
-onMounted(() => {
+function attachMenuListeners() {
   document.addEventListener("pointerdown", dismissMenu);
   window.addEventListener("resize", positionMenu);
-  window.addEventListener("scroll", positionMenu, true);
-});
-onBeforeUnmount(() => {
+  window.addEventListener("scroll", positionMenu, { capture: true, passive: true });
+}
+function detachMenuListeners() {
   document.removeEventListener("pointerdown", dismissMenu);
   window.removeEventListener("resize", positionMenu);
   window.removeEventListener("scroll", positionMenu, true);
-});
+}
+onBeforeUnmount(detachMenuListeners);
 
 function onOpen(viewerId: string) {
   closeMenu();

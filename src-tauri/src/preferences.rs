@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all="camelCase")]
-pub struct Preferences { pub theme: String, pub manager_font: String, pub manager_font_size: u16, pub cyoa_font: String, pub archive_limit: usize }
-impl Default for Preferences { fn default()->Self {Self{theme:"mocha".into(),manager_font:"system-ui".into(),manager_font_size:16,cyoa_font:String::new(),archive_limit:5}} }
+pub struct Preferences { pub theme: String, pub manager_font: String, pub manager_font_size: u16, pub cyoa_font: String, pub use_author_fonts: bool, pub archive_limit: usize }
+impl Default for Preferences { fn default()->Self {Self{theme:"mocha".into(),manager_font:"system-ui".into(),manager_font_size:16,cyoa_font:String::new(),use_author_fonts:false,archive_limit:5}} }
 pub fn load()->Preferences { std::fs::read(crate::library::data_root_dir().join("save/preferences.json")).ok().and_then(|b|serde_json::from_slice(&b).ok()).unwrap_or_default() }
 #[tauri::command]
-pub fn set_preferences(mut preferences: Preferences)->Result<(),String>{
+pub fn set_preferences(mut preferences: Preferences, app:tauri::AppHandle)->Result<(),String>{
+    let old=load();
     preferences.archive_limit=preferences.archive_limit.clamp(3,5);
     preferences.manager_font_size=preferences.manager_font_size.clamp(12,24);
     for font in [&preferences.manager_font,&preferences.cyoa_font] {if font.len()>200 || font.chars().any(|c| c=='\n' || c=='\r') {return Err("Invalid font name".into());}}
@@ -13,7 +14,12 @@ pub fn set_preferences(mut preferences: Preferences)->Result<(),String>{
     std::fs::create_dir_all(file.parent().unwrap()).map_err(|e|e.to_string())?;
     let pending=file.with_extension(format!("{}.pending",uuid::Uuid::new_v4()));
     std::fs::write(&pending,serde_json::to_vec_pretty(&preferences).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    std::fs::rename(pending,file).map_err(|e|e.to_string())
+    std::fs::rename(pending,file).map_err(|e|e.to_string())?;
+    if old.cyoa_font!=preferences.cyoa_font || old.use_author_fonts!=preferences.use_author_fonts {
+        use tauri::Manager;
+        for (label,window) in app.webview_windows(){if label.starts_with("viewer-"){let _=window.eval("window.__cyoaManagerPresentation?.reload()");}}
+    }
+    Ok(())
 }
 #[tauri::command(async)]
 pub fn get_fonts()->Vec<String>{
@@ -34,3 +40,10 @@ pub fn serve_regular_font(uri:&tauri::http::Uri)->tauri::http::Response<Vec<u8>>
   if !path.extension().and_then(|x|x.to_str()).is_some_and(|ext|matches!(ext,"ttf"|"otf"|"ttc")){return Err("No regular font face available".into());}std::fs::read(path).map_err(|e|e.to_string())
  })();match response{Ok(bytes)=>tauri::http::Response::builder().header("Content-Type","font/ttf").header("Access-Control-Allow-Origin","*").header("Cache-Control","max-age=86400").body(bytes).unwrap(),Err(error)=>tauri::http::Response::builder().status(404).body(error.into_bytes()).unwrap()}
 }
+
+/// Empty family means no typography override; project exceptions beat the global mode.
+pub fn reader_font(preferences: &Preferences, project_mode: &str) -> String {
+    if project_mode == "author" || (project_mode != "custom" && preferences.use_author_fonts) { String::new() }
+    else { preferences.cyoa_font.clone() }
+}
+include!("../../tests/rust/preferences.rs");

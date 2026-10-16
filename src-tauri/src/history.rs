@@ -408,7 +408,7 @@ pub async fn optimize_storage(app:tauri::AppHandle)->Result<serde_json::Value,St
   let state=app.state::<crate::models::SessionStore>();let sessions=state.lock().map_err(|e|e.to_string())?;let mut compressed=0;
   for version in all_versions()?{let file=Path::new(&version.project.file_path);let root=file.parent().and_then(Path::parent).ok_or("Archive folder missing")?;
    let idle=!sessions.values().any(|s|s.file_path==version.project.file_path);
-   if crate::archive_storage::pack(root,idle)?{compressed+=1;}
+   if crate::archive_storage::pack_if_needed(root,idle)?{compressed+=1;}
   }
   Ok(serde_json::json!({"thumbnails":changed,"archives":compressed}))
  }).await.map_err(|e|e.to_string())?

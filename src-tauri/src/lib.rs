@@ -16,6 +16,8 @@ mod library;
 mod models;
 mod perk_index;
 mod protocol;
+mod reader_assets;
+mod reader_settings;
 
 use tauri::Manager;
 use commands::*;
@@ -25,9 +27,18 @@ use perk_index::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+struct StartupFailure(Option<String>);
+fn command_error(label: &str, startup: &StartupFailure) -> Option<String> {
+    if let Some(error) = &startup.0 { return Some(error.clone()); }
+    if label != "main" { return Some("Reader windows cannot call manager commands".into()); }
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut startup_error = None;
     let startup = load_library().unwrap_or_else(|error| {
+        startup_error = Some(format!("Library storage could not be opened. No manager commands were run. Preserve your data and fix the storage error, then restart: {error}"));
         eprintln!("Failed to load library storage: {}", error);
         library::LibraryLoadResult {
             library: Library::default(),
@@ -41,7 +52,23 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {if let Some(main)=app.get_webview_window("main"){main.set_background_color(Some(preferences::background_color(&preferences::load().theme)))?;}Ok(())})
+        .setup(|app| {
+            #[cfg(target_os = "linux")]
+            reader_assets::cleanup_stale();
+            if let Some(main)=app.get_webview_window("main") {
+                main.set_background_color(Some(preferences::background_color(&preferences::load().theme)))?;
+                #[cfg(target_os = "linux")]
+                main.with_webview(|webview| {
+                    use webkit2gtk::{WebViewExt, WebContextExt};
+                    if let Some(context)=webview.inner().context() {
+                        // Long local documents should not retain a browser history/page cache.
+                        context.set_cache_model(webkit2gtk::CacheModel::DocumentViewer);
+                    }
+                })?;
+            }
+            Ok(())
+        })
+        .manage(StartupFailure(startup_error))
         .manage(Mutex::new(library))
         .manage(sessions)
         .manage(models::LegacyRecovery::new(None))
@@ -53,7 +80,7 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(protocol::handle(&app, &label, request)));
         })
         .invoke_handler(|invoke| {
-            if invoke.message.webview().label().starts_with("website-"){invoke.resolver.reject("Website readers cannot call manager commands");return true;}
+            if let Some(error) = command_error(invoke.message.webview().label(), &invoke.message.webview().state::<StartupFailure>()) { invoke.resolver.reject(error); return true; }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>)->bool=tauri::generate_handler![
             get_library,
             author_aliases::get_author_aliases,
@@ -61,6 +88,7 @@ pub fn run() {
             websites::download_website,
             metadata::enrich_library_metadata,
             catalog_metadata::enrich_catalog_metadata,
+            catalog_metadata::get_catalog_rows,
             metadata::find_duplicates,
             preferences::set_preferences,
             preferences::get_fonts,
@@ -106,3 +134,6 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+include!("../../tests/rust/command_access.rs");

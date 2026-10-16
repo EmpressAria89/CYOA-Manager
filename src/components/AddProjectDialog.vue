@@ -86,7 +86,7 @@ code { color: var(--accent); }
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 0.85rem;
-  color: #e88;
+  color: var(--danger);
 }
 .dialog-actions {
   display: flex;

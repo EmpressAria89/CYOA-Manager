@@ -1,7 +1,7 @@
 [package]
 name = "cyoa-manager"
 version = "0.1.8"
-description = "A Tauri App"
+description = "Linux desktop CYOA library with preserved editions and interactive readers"
 authors = ["om1cr0n"]
 edition = "2021"
 
@@ -41,4 +41,5 @@ percent-encoding = "2"
 sha2 = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0.2"
 image = { version = "0.25", default-features = false, features = ["avif-native"] }

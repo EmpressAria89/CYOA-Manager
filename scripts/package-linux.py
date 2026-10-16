@@ -28,7 +28,7 @@ try:
     shutil.copy2(root / 'scripts/launch-linux.sh', output / 'launch.sh')
     (output / 'launch.sh').chmod(0o755)
     shutil.copy2(root / 'scripts/install-linux-launcher.py', output / 'install-menu.py')
-    for file in ['README.md','LICENSE']:
+    for file in ['README.md','HANDOFF.md','LICENSE']:
         shutil.copy2(root / file, output / file)
     shutil.copytree(root / 'docs', output / 'docs')
     (output / 'tests').mkdir()

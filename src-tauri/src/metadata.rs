@@ -44,7 +44,7 @@ pub fn infer(json: &Value, name: &str) -> ProjectMetadata {
     let viewer_check = if icc2_compatible(json) { "ICC2 Plus format check passed" } else if json["rows"].as_array().is_some_and(|r| r.iter().any(|r| r["perks"].is_array())) { "Om1cr0n format" } else { "ICC2 Plus format needs review; legacy viewer available" };
     let (author, inferred_modder)=split_credits(&author);
     let explicit_modder=text(json,&["modder","modAuthor"]);
-    ProjectMetadata { title, author, modder: if explicit_modder.is_empty(){inferred_modder}else{explicit_modder}, kind:String::new(),metadata_revision:2,fandom, completion, is_mod, viewer_check: viewer_check.into(), restored_from_archive: false }
+    ProjectMetadata { title, author, modder: if explicit_modder.is_empty(){inferred_modder}else{explicit_modder}, kind:String::new(),metadata_revision:2,fandom, completion, is_mod, viewer_check: viewer_check.into(), restored_from_archive: false, font_preference: String::new() }
 }
 pub fn split_credits(value:&str)->(String,String){
     let re=regex::Regex::new(r"(?i)^(.+?)\s*[-–—]\s*(.+?)\s*\(mod\)\s*$").unwrap();

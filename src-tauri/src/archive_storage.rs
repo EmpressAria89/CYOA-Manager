@@ -29,6 +29,13 @@ fn pack_unlocked(root:&Path,retire:bool)->Result<bool,String>{
  })();if result.is_err(){let _=fs::remove_file(pending);}result
 }
 pub fn pack(root:&Path,retire:bool)->Result<bool,String>{let _guard=STORAGE.lock().map_err(|e|e.to_string())?;pack_unlocked(root,retire)}
+/// Startup maintenance need not decompress/hash every already-compressed edition.
+/// Opening/restoring still verifies the ZIP; retiring loose copies always verifies.
+pub fn pack_if_needed(root:&Path,retire:bool)->Result<bool,String>{
+ let _guard=STORAGE.lock().map_err(|e|e.to_string())?;
+ if root.join("files.zip").is_file() && !root.join("files").exists(){return Ok(false);}
+ pack_unlocked(root,retire)
+}
 fn extract_unlocked(project:&Path)->Result<(),String>{
  let files=project.parent().ok_or("Archive files folder missing")?;let root=files.parent().ok_or("Archive folder missing")?;let zip_path=root.join("files.zip");
  if !zip_path.exists(){if project.is_file(){return Ok(());}return Err("Archived project is missing".into());}

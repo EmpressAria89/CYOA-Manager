@@ -1,4 +1,4 @@
-# CYOA Manager — Linux // AI Coded
+# CYOA Manager — Linux
 
 The [EmpressAria89 fork](https://github.com/EmpressAria89/CYOA-Manager) is a **Linux-only fork** of [alexncode/CYOA-Manager](https://github.com/alexncode/CYOA-Manager), focused on a local CYOA library, readable themes, identified builds and preserved editions.
 
@@ -15,6 +15,14 @@ Development and native testing currently target **Linux x86_64**. Windows, macOS
 - Internal saved website snapshots, plus an online reader for dynamic sites.
 - ICC2 Plus by default; legacy viewers remain available when needed.
 - Windowed startup. ICC2 Plus can preview hidden choices and bonuses within sections you open.
+- Live reader typography by text section, pinned per-CYOA overrides, density controls, cost/gain colors and optional section hiding.
+- Public keyless catalog access, shared cached metadata and protected startup on storage errors.
+
+## Interface
+
+![Settings in Catppuccin Mocha](docs/images/settings.png)
+
+Settings preview from a synthetic test session. Manager text size, reader typography and appearance are independent.
 
 ## Run a Linux package
 
@@ -58,10 +66,14 @@ The binary is `src-tauri/target/release/cyoa-manager`; the package is under `rel
 - [Development](docs/development.md): dependencies, tests, packaging and source layout.
 - [Storage and recovery](docs/storage-and-recovery.md): data locations, backups and rollback.
 - [Requirements checklist](docs/requirements-checklist.md): implemented behavior and verification limits.
+- [Maintainer handoff](HANDOFF.md), [roadmap](docs/roadmap.md) and [audit](docs/audit-2026-10-16.md).
+- [GitHub publication](docs/github-publication.md): validated one-time source export, keeping the working folder detached.
 - [Tests](tests/README.md): retained regression checks; private results and fixtures are ignored by Git.
 
 Vue/TypeScript lives in `src/`, Rust in `src-tauri/src/`, bundled viewers in `public/viewers/`, tests in `tests/`, and packaging/recovery tools in `scripts/`.
 
 ## Credits
+
+This fork was developed with AI assistance; the dated audit documents verification and remaining limitations.
 
 This fork retains the upstream project and bundled viewer credits: ICC Original by MeanDelay, ICC2 Plus by Wahaha303, and Om1cr0n's viewer. Catalog data comes from the [Infaera index](https://docs.google.com/spreadsheets/d/1jxBbWB08myhD8YXePPifsWQG3JH2qZtBs9Y5yYcqE7g/). See [LICENSE](LICENSE) for the manager license; CYOAs and bundled third-party material retain their own ownership.

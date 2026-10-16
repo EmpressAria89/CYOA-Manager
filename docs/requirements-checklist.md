@@ -29,7 +29,22 @@
 - [x] Automatic lossless ZIP compression of new and existing archives; verify checksums before retiring loose copies.
 - [x] Verify archive extraction/restore, corruption preservation and open-version cache protection.
 - [x] Verify final migration and normal launch against the real library.
-- [x] Centralize checks in tests/, recovery snapshots outside the workspace, and documentation in docs/.
+- [x] Centralize checks in tests/, private data snapshots outside source, and documentation in docs/.
 - [x] GitHub README and workflow identify Linux x86_64 scope; upstream platform release paths retired.
 
 Rendering and website compatibility have been tested on fixtures and native Naruto; all authored pages and live catalog sites are not exhaustively tested. No performance benchmark claim is made.
+
+
+## Reader and maintenance additions
+
+- [x] Live reader font/size controls for whole CYOA, titles, descriptions and costs/gains; retain authored size differences.
+- [x] Per-CYOA section overrides remain pinned until reset; author defaults remain available.
+- [x] Top/Bottom navigation, consistent dock controls, larger cheats and cost/gain labels with distinct colors.
+- [x] Reader density changes preserve artwork proportions and game state.
+- [x] Automatic dependent-section hiding inside clear parent relationships; manual per-CYOA hiding and reset.
+- [x] Keyless public catalog fetching shared with optional metadata enrichment.
+- [x] Menu listener lifetime, coalesced refreshes/preferences and stale-cover guards.
+- [x] Website commit cleanup protection and read-failure command guard.
+- [x] Maintainer handoff, future roadmap, resumable audit record and validated GitHub source export.
+
+See the [dated audit](audit-2026-10-16.md) for the actual final checks and remaining limitations. Checked boxes describe implemented behavior, not universal compatibility or proof that every future CYOA works.

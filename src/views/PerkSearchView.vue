@@ -74,6 +74,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(async () => {
+  searchRequestId += 1;
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = null;
@@ -273,6 +274,7 @@ watch(
 watch(
   () => query.value,
   () => {
+    searchRequestId += 1;
     if (searchDebounceTimer) {
       clearTimeout(searchDebounceTimer);
     }
@@ -443,7 +445,7 @@ watch(
 }
 
 .error {
-  color: #cf5a5a;
+  color: var(--danger);
 }
 
 .results-sentinel {

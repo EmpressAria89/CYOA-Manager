@@ -1,4 +1,5 @@
 export interface Project {
+  font_preference?: "" | "author" | "custom";
   restored_from_archive?: boolean;
   title?: string;
   author?: string;
@@ -27,6 +28,7 @@ export interface Project {
 }
 
 export interface ProjectPatch {
+  font_preference?: "" | "author" | "custom";
   title?: string;
   author?: string;
   source_author?: string;

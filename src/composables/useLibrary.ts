@@ -11,6 +11,7 @@ const loading = ref(false);
 const error = ref<string | null>(null);
 let libraryLoaded = false;
 let libraryLoadPromise: Promise<void> | null = null;
+let refreshRequested = false;
 
 export function useLibrary() {
   const { settings } = useSettings();
@@ -20,24 +21,26 @@ export function useLibrary() {
       return;
     }
 
-    if (!force && libraryLoadPromise) {
+    if (libraryLoadPromise) {
+      if (force) refreshRequested = true;
       return libraryLoadPromise;
     }
-
     libraryLoadPromise = (async () => {
       try {
-        loading.value = rawProjects.value.length===0;
+        loading.value = rawProjects.value.length === 0;
         error.value = null;
-        rawProjects.value = await invoke<Project[]>("get_library");
-        libraryLoaded = true;
-      } catch (e: any) {
+        do {
+          refreshRequested = false;
+          rawProjects.value = await invoke<Project[]>("get_library");
+          libraryLoaded = true;
+        } while (refreshRequested);
+      } catch (e: unknown) {
         error.value = String(e);
       } finally {
         loading.value = false;
         libraryLoadPromise = null;
       }
     })();
-
     return libraryLoadPromise;
   }
 
@@ -186,9 +189,8 @@ export function useLibrary() {
 
     try {
       const updated = await invoke<Project>("set_project_favorite", { id, favorite });
-      if (idx !== -1) {
-        rawProjects.value[idx] = updated;
-      }
+      const current = rawProjects.value.findIndex(p => p.id === id);
+      if (current !== -1) rawProjects.value[current] = updated;
       return updated;
     } catch (error) {
       if (previousFavorite !== null) {

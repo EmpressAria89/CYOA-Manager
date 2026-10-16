@@ -20,6 +20,7 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
+      - run: python3 tests/check-project-layout.py
       - run: pnpm test:rust
       - run: pnpm release:linux
       - run: pnpm exec playwright install --with-deps chromium

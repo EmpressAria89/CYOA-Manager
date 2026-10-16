@@ -1,20 +1,19 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { ref, watch, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import { useSettings } from "../composables/useSettings";
 import { useLibrary } from "../composables/useLibrary";
 
-const { settings, applyTheme } = useSettings();
+const { settings } = useSettings();
 const { viewers, clearLibrary, compressLibraryCoverImages } = useLibrary();
 const fonts = ref<string[]>([]);
-onMounted(async () => { fonts.value = await invoke<string[]>("get_fonts"); });
+onMounted(async () => { try { fonts.value = await invoke<string[]>("get_fonts"); } catch (error) { libraryActionError.value = `Could not list installed fonts: ${String(error)}`; } });
 const clearingLibrary = ref(false);
 const compressingLibraryCovers = ref(false);
 const libraryActionError = ref<string | null>(null);
 const libraryActionMessage = ref<string | null>(null);
 const showClearLibraryConfirm = ref(false);
 
-watch(() => settings.value.theme, applyTheme);
 
 function onClearLibrary() {
   libraryActionError.value = null;
@@ -68,13 +67,14 @@ async function onCompressLibraryCovers() {
       <label class="row"><span>Manager font</span><input v-model="settings.managerFont" list="available-fonts" placeholder="system-ui" /></label>
       <label class="row"><span>Manager text size (px)</span><input v-model.number="settings.managerFontSize" type="number" min="12" max="24" step="1" /></label>
       <p class="hint">Applies immediately to the library, settings and other manager pages. Default: 16 px.</p>
+      <label class="row"><span>Default CYOA typography</span><select v-model="settings.useAuthorFonts" aria-label="Default CYOA typography"><option :value="false">My CYOA font</option><option :value="true">Author default</option></select></label>
       <label class="row"><span>CYOA font override</span><input v-model="settings.cyoaFont" list="available-fonts" placeholder="Author’s original font" /></label>
-      <p class="hint">The CYOA override applies when a viewer opens. Leave it empty to use the author’s styling.</p>
+      <p class="hint">Applies to open ICC2 Plus readers and newly opened readers. Author default keeps your chosen font saved. Override individual CYOAs in Edit Project → CYOA typography. An empty custom font also uses author styling.</p>
       <label class="row"><span>Unstarred archive versions to keep</span><select v-model.number="settings.archiveLimit"><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option></select></label>
       <p class="hint">Starred archives are never automatically removed. Retention runs after a successful changed update.</p>
       <label class="row">
         <span>Theme</span>
-        <select v-model="settings.theme">
+        <select v-model="settings.theme" aria-label="Theme">
           <option value="system">System default</option>
           <option value="latte">Catppuccin Latte</option>
           <option value="frappe">Catppuccin Frappé</option>
@@ -173,8 +173,12 @@ async function onCompressLibraryCovers() {
 
 <style scoped>
 .settings-view {
-  padding: 32px 40px;
-  max-width: 600px;
+  padding: 28px 32px;
+  width: 100%;
+  max-width: 740px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 h1 {
   margin: 0 0 28px;
@@ -198,6 +202,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 20px;
+  padding-block: 8px;
   font-size: 0.9rem;
 }
 .checkbox-row {
@@ -233,7 +238,8 @@ h1 {
 .row input:not([type="checkbox"]):focus { border-color: var(--accent); }
 .row select:focus { border-color: var(--accent); }
 .hint {
-  margin: 8px 0 0;
+  margin: 4px 0 12px;
+  line-height: 1.5;
   font-size: 0.8rem;
   color: var(--muted);
 }
@@ -271,12 +277,12 @@ h1 {
 .error-text {
   margin-top: 10px;
   font-size: 0.8rem;
-  color: #e55;
+  color: var(--danger);
 }
 .success-text {
   margin-top: 10px;
   font-size: 0.8rem;
-  color: #5fb36b;
+  color: var(--success);
 }
 .confirm-overlay {
   position: fixed;
@@ -313,4 +319,9 @@ h1 {
   margin-top: 18px;
 }
 
+@media (max-width: 900px) {
+ .settings-view { padding: 20px; }
+ .row:not(.checkbox-row) { align-items: stretch; flex-direction: column; gap: 6px; }
+ .row input:not([type="checkbox"]), .row select { min-width: 0; max-width: 100%; }
+}
 </style>

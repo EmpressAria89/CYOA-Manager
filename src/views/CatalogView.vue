@@ -11,9 +11,6 @@ import { useSettings } from "../composables/useSettings";
 import ProgressBar from "../components/ProgressBar.vue";
 import OversizeActionPrompt from "../components/OversizeActionPrompt.vue";
 
-const GOOGLE_SHEETS_API_KEY = "AIzaSyBRhMRxRwP23DhvQdjCuk1saB5q2Xnp2kk";
-const GOOGLE_SHEETS_SPREADSHEET_ID = "1jxBbWB08myhD8YXePPifsWQG3JH2qZtBs9Y5yYcqE7g";
-const GOOGLE_SHEETS_SHEET_NAME = "Beta Index";
 const LOCAL_CATALOG_URL = "/zip_link_catalog_data.js";
 
 const { projects, loadLibrary, startDownloadCatalogEntry, startOverwriteCatalogEntry, startApplyOversizeProjectAction, setProjectFavorite, updateProject } = useLibrary();
@@ -100,9 +97,7 @@ type CatalogListEntry = CatalogEntry & {
   existingProjectFavorite: boolean;
 };
 
-type GoogleSheetResponse = {
-  values?: string[][];
-};
+
 
 const existingCatalogProjectByWebsite = computed(() => {
   const map = new Map<string, Project>();
@@ -712,14 +707,7 @@ async function loadZipFallbackMap(): Promise<Map<string, CatalogEntry>> {
 }
 
 async function fetchGoogleSheetCatalogEntries(zipFallbacks: Map<string, CatalogEntry>): Promise<CatalogEntry[]> {
-  const url = buildGoogleSheetApiUrl();
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Failed to load Google Sheets catalog: HTTP ${response.status}`);
-  }
-
-  const payload = await response.json() as GoogleSheetResponse;
-  const values = payload.values;
+  const values = await invoke<string[][]>("get_catalog_rows");
   if (!Array.isArray(values) || values.length < 2) {
     throw new Error("Google Sheets catalog did not contain any rows");
   }
@@ -729,11 +717,6 @@ async function fetchGoogleSheetCatalogEntries(zipFallbacks: Map<string, CatalogE
 
 async function fetchLocalCatalogEntries(url: string): Promise<CatalogEntry[]> {
   return fetchCatalogEntries(url);
-}
-
-function buildGoogleSheetApiUrl(): string {
-  const encodedSheetName = encodeURIComponent(GOOGLE_SHEETS_SHEET_NAME);
-  return `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEETS_SPREADSHEET_ID}/values/${encodedSheetName}?key=${GOOGLE_SHEETS_API_KEY}`;
 }
 
 function mapGoogleSheetRowsToCatalogEntries(rows: string[][], zipFallbacks: Map<string, CatalogEntry>): CatalogEntry[] {
@@ -1362,13 +1345,13 @@ function getTypeBadgeClass(type: string | undefined): string {
 .banner.success {
   background: rgba(95, 179, 107, 0.14);
   border: 1px solid rgba(95, 179, 107, 0.45);
-  color: #8ae29a;
+  color: var(--success);
 }
 
 .banner.error {
   background: rgba(200, 50, 50, 0.15);
-  border: 1px solid #c33;
-  color: #e88;
+  border: 1px solid var(--danger);
+  color: var(--danger);
 }
 
 .grid {
@@ -1612,7 +1595,7 @@ function getTypeBadgeClass(type: string | undefined): string {
 .favorite-action-btn.active {
   background: rgba(255, 122, 143, 0.14);
   border-color: rgba(255, 122, 143, 0.35);
-  color: #ff7a8f;
+  color: var(--danger);
 }
 
 .btn-overwrite {

@@ -63,7 +63,23 @@ pub fn handle(app: &tauri::AppHandle, webview_label: &str, request: Request<Vec<
         }
         let values=state.lock().ok().and_then(|v|v.clone());return json(serde_json::json!({"ready":values.is_some(),"builds":values.unwrap_or_default()}));
     }
+    if file_path == "__manager_reader.js" {return javascript(include_str!("viewer_presentation.js").as_bytes().to_vec());}
+    if file_path == "__manager_reader_fonts" {return json(serde_json::json!(crate::preferences::get_fonts()));}
+    if file_path == "__manager_reader_settings" {
+        let result=crate::reader_settings::handle(&session,request.method().as_str(),request.body(),app);
+        if result.is_ok() && request.method().as_str()=="POST" {
+            for (label,window) in app.webview_windows(){if label.starts_with("viewer-"){let _=window.eval("window.__cyoaManagerPresentation?.reload()");}}
+        }
+        return match result {Ok(value)=>json(value),Err(error)=>Response::builder().status(400).header("Content-Type","application/json").body(serde_json::to_vec(&serde_json::json!({"error":error})).unwrap()).unwrap()};
+    }
     if file_path == "__manager_tools.js" { return javascript(include_str!("viewer_tools.js").as_bytes().to_vec()); }
+    if file_path == "__manager_images.js" { return javascript(include_str!("viewer_images.js").as_bytes().to_vec()); }
+    if let Some(name) = file_path.strip_prefix("__manager_images/") {
+        return match crate::reader_assets::image(webview_label, name) {
+            Some((bytes,mime)) => Response::builder().header("Content-Type",mime).header("Cache-Control","no-store").body(bytes).unwrap(),
+            None => err(404,"Reader image not found"),
+        };
+    }
     if file_path == "__manager_recovery.html" { return html(include_str!("viewer_recovery.html").as_bytes().to_vec()); }
     if file_path == "__manager_builds.js" {
         return javascript(include_str!("viewer_builds.js").as_bytes().to_vec());
@@ -92,8 +108,13 @@ pub fn handle(app: &tauri::AppHandle, webview_label: &str, request: Request<Vec<
     }
     // Pin this window to the project version opened, even after a library update.
     if file_path == "project.json" {
-        return match std::fs::read(&session.file_path) {
-            Ok(bytes) => Response::builder().header("Content-Type", "application/json").body(bytes).unwrap(),
+        let bytes = if session.viewer_id == "icc2-plus" {
+            crate::reader_assets::project(webview_label, &session.file_path, || {
+                app.state::<SessionStore>().lock().is_ok_and(|store|store.contains_key(webview_label))
+            }).map_err(std::io::Error::other)
+        } else { std::fs::read(&session.file_path) };
+        return match bytes {
+            Ok(bytes) => Response::builder().header("Content-Type", "application/json").header("Cache-Control","no-store").body(bytes).unwrap(),
             Err(e) => err(500, &e.to_string()),
         };
     }
@@ -160,6 +181,39 @@ fn serve_local_asset(base_dir: &Path, file_path: &str, session: Option<&crate::m
 fn bridge_native_bundle(filename: &str, bytes: Vec<u8>) -> Vec<u8> {
     if filename == "app.B6d7tc9y.js" {
         let mut source = String::from_utf8_lossy(&bytes).into_owned();
+        // Short resource URLs plus viewport lifetime prevent visited images accumulating.
+        let image_source = regex::Regex::new(r#"Le\(([A-Za-z_$][A-Za-z0-9_$]*),"src","#).unwrap();
+        source = image_source.replace_all(&source, "window.__cyoaManagerImages.setSource($1,\"src\",").into_owned();
+        // Preloading every resource would undo viewport loading on externalized exports.
+        source = source.replace("app.preloadExternalImages&&", "false&&");
+        // Hooks receive original authored CSS, including per-row/private typography.
+        // Semantic score classification uses the engine's evaluated/discounted sign.
+        let score_start=source.find("function Dr(");let score_end=source.find("var Fr=");
+        if let (Some(start),Some(end))=(score_start,score_end) {
+            let fragment=source[start..end].replace("function Dr(e,t){", "function Dr(e,t){const managerScoreKind=()=>t.score.setValue?\"set\":v(p)?\"gain\":\"cost\";").replace("qe(o,v(m))", "window.__cyoaManagerPresentation.style(o,v(m),\"score\",managerScoreKind())");
+            source.replace_range(start..end,&fragment);
+        }
+        for (start_marker,end_marker,title,text) in [("function dl(","We([\"contextmenu\"])","j","q"),("function zl(","function va(","N","G")] {
+            if let Some(start)=source.find(start_marker) {if let Some(relative)=source[start..].find(end_marker) {
+                let end=start+relative;let mut fragment=source[start..end].to_string();
+                for node in ["t","o"] {
+                    fragment=fragment.replace(&format!("qe({node},v({title}))"),&format!("window.__cyoaManagerPresentation.style({node},v({title}),\"title\")"));
+                    fragment=fragment.replace(&format!("qe({node},v({text}))"),&format!("window.__cyoaManagerPresentation.style({node},v({text}),\"description\")"));
+                }
+                if start_marker=="function zl(" {fragment=fragment.replace("var i=El(),n=D(i);", "var i=El(),n=D(i);window.__cyoaManagerPresentation.card(i);");}
+                source.replace_range(start..end,&fragment);
+            }}
+        }
+        // Keep authored requirement state p intact: deselectChoices must never react
+        // to a presentation-only collapse. Svelte tracks parent requirement reads.
+        source=source.replace("p=f(()=>Wo(t.row.requireds)),", "p=f(()=>Wo(t.row.requireds)),managerVisible=f(()=>{app.managerSectionRevision;return window.__cyoaManagerPresentation.rowVisible(t.row,Wo,id=>Ft.get(id)?.row)}),");
+        for (before,after) in [
+            ("ee(J,e=>{v(p)&&e(Z)})","ee(J,e=>{v(p)&&v(managerVisible)&&e(Z)})"),
+            ("ee(X,e=>{v(p)&&e(K)})","ee(X,e=>{v(p)&&v(managerVisible)&&e(K)})"),
+            (".concat(v(p)?\"\":\" hidden\")",".concat(v(p)&&v(managerVisible)?\"\":\" hidden\")"),
+        ] {source=source.replace(before,after);}
+        let authored_style=regex::Regex::new(r"qe\(([A-Za-z_$][A-Za-z0-9_$]*),v\(([A-Za-z_$][A-Za-z0-9_$]*)\)\)").unwrap();
+        source=authored_style.replace_all(&source,"window.__cyoaManagerPresentation.style($1,v($2),\"body\")").into_owned();
         // Preserve row gates: they are also authored tab/navigation controls.
         // Reveal choices and addons only inside rows the player has actually opened.
         let gates = [
@@ -193,7 +247,10 @@ fn themed_html(html:&str,session:&crate::models::ViewerSession)->String{
 }
 fn inject_viewer_overlay(bytes: Vec<u8>,session:&crate::models::ViewerSession) -> Vec<u8> {
     let original = String::from_utf8_lossy(&bytes);
-    let html = themed_html(&original,session);
+    let mut html = themed_html(&original,session);
+    if session.viewer_id == "icc2-plus" {
+        html = html.replacen("<head>", "<head><script src=\"/__manager_reader.js\"></script><script src=\"/__manager_images.js\"></script>", 1);
+    }
     let injection = format!("<script src=\"/__manager_tools.js\"></script><script src=\"/__manager_builds.js\"></script><script src=\"/{VIEWER_OVERLAY_SCRIPT_PATH}\"></script>");
 
     if html.contains(VIEWER_OVERLAY_SCRIPT_PATH) {

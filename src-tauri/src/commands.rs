@@ -2576,6 +2576,10 @@ pub fn update_project(
 
     let mut updated = lib.projects[index].clone();
 
+    if let Some(mode) = patch.font_preference {
+        if !["", "author", "custom"].contains(&mode.as_str()) { return Err("Invalid CYOA font preference".into()); }
+        updated.metadata.font_preference = mode;
+    }
     if let Some(v) = patch.title { updated.metadata.title = v; }
     if let Some(v) = patch.author { updated.metadata.author = v; }
     if let Some(v) = patch.modder { updated.metadata.modder = v; }
@@ -3041,14 +3045,16 @@ pub fn open_viewer_window(
     let is_website=viewer_id=="website";
     let label = format!("{}-{}", if viewer_id.starts_with("website"){"website"}else{"viewer"}, &Uuid::new_v4().to_string()[..8]);
 
-    let file_path = if let Some(version_id) = version_id {
-        crate::history::versions_for(&project_id)?.into_iter().find(|v|v.id==version_id)
-            .ok_or("Archived version not found")?.project.file_path
+    let (file_path, font_preference) = if let Some(version_id) = version_id {
+        let project=crate::history::versions_for(&project_id)?.into_iter().find(|v|v.id==version_id)
+            .ok_or("Archived version not found")?.project;
+        (project.file_path, project.metadata.font_preference)
     } else {
         let library = app.state::<LibraryState>();
         let lib = library.lock().map_err(|e| e.to_string())?;
-        lib.projects.iter().find(|p| p.id == project_id)
-            .ok_or_else(|| "Project not found".to_string())?.file_path.clone()
+        let project=lib.projects.iter().find(|p| p.id == project_id)
+            .ok_or_else(|| "Project not found".to_string())?;
+        (project.file_path.clone(), project.metadata.font_preference.clone())
     };
     if viewer_id=="website-live" {
         let source=if Path::new(&file_path).parent().and_then(Path::parent).is_some_and(|p|p.join("files.zip").is_file()){crate::archive_storage::with_files(Path::new(&file_path),||Ok(crate::websites::read(Path::new(&file_path))?.url))?}else{crate::websites::read(Path::new(&file_path))?.url};let url=tauri::Url::parse(&source).map_err(|e|e.to_string())?;
@@ -3059,10 +3065,12 @@ pub fn open_viewer_window(
     let fingerprint = if Path::new(&file_path).parent().and_then(Path::parent).is_some_and(|p|p.join("files.zip").is_file()){crate::archive_storage::with_files(Path::new(&file_path),||crate::builds::fingerprint(Path::new(&file_path)))?}else{crate::builds::fingerprint(Path::new(&file_path))?};
     let preferences = crate::preferences::load();
     let background=crate::preferences::background_color(&preferences.theme);
+    let reader_font=crate::preferences::reader_font(&preferences,&font_preference);
     {
         session_store.insert(
             label.clone(),
             ViewerSession {
+                font_preference,
                 project_id: project_id.clone(),
                 viewer_id,
                 cheats_enabled,
@@ -3070,7 +3078,7 @@ pub fn open_viewer_window(
                 project_name: project_name.clone(),
                 fingerprint: fingerprint.clone(),
                 theme: preferences.theme,
-                cyoa_font: preferences.cyoa_font,
+                cyoa_font: reader_font,
             },
         );
     }
@@ -3080,9 +3088,18 @@ pub fn open_viewer_window(
 
     if !is_website && app.state::<crate::models::LegacyRecovery>().lock().map_err(|e|e.to_string())?.is_none() {
         let recovery_label=format!("recovery-{}",Uuid::new_v4());
-        let copy=sessions.lock().map_err(|e|e.to_string())?.get(&label).cloned().ok_or("Session missing")?;
-        sessions.lock().map_err(|e|e.to_string())?.insert(recovery_label.clone(),copy);
-        let recovery_app=app.clone();std::thread::spawn(move||{let _=tauri::WebviewWindowBuilder::new(&recovery_app,&recovery_label,tauri::WebviewUrl::CustomProtocol(tauri::Url::parse("cyoaview://localhost/__manager_recovery.html?top=1").unwrap())).visible(false).build();});
+        let start_recovery = {
+            let mut store=sessions.lock().map_err(|e|e.to_string())?;
+            if store.keys().any(|key|key.starts_with("recovery-")) { false }
+            else { let copy=store.get(&label).cloned().ok_or("Session missing")?; store.insert(recovery_label.clone(),copy); true }
+        };
+        if start_recovery {
+            let recovery_app=app.clone();std::thread::spawn(move||{
+                if tauri::WebviewWindowBuilder::new(&recovery_app,&recovery_label,tauri::WebviewUrl::CustomProtocol(tauri::Url::parse("cyoaview://localhost/__manager_recovery.html?top=1").unwrap())).visible(false).build().is_err() {
+                    if let Ok(mut store)=recovery_app.state::<SessionStore>().lock(){store.remove(&recovery_label);}
+                }
+            });
+        }
     }
     let app_for_thread = app.clone();
     let label_for_thread = label.clone();
@@ -3101,16 +3118,26 @@ pub fn open_viewer_window(
         .zoom_hotkeys_enabled(true)
         .build()
         {
+            #[cfg(target_os = "linux")]
+            let _ = window.with_webview(|webview| {
+                use webkit2gtk::WebViewExt;
+                webview.inner().connect_web_process_terminated(|_, reason| {
+                    eprintln!("CYOA reader WebKit process terminated: {reason:?}");
+                });
+            });
             let cleanup_app = app_for_thread.clone();
             let cleanup_label = label_for_thread.clone();
             window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed) {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
                     if let Ok(mut store) = cleanup_app.state::<SessionStore>().lock() {
                         store.remove(&cleanup_label);
                     }
-                    let copy=cleanup_app.clone();std::thread::spawn(move||{if let Err(e)=crate::history::release_archive_cache(&copy){eprintln!("Archive cache cleanup: {e}");}});
+                    let copy=cleanup_app.clone();let cache_label=cleanup_label.clone();std::thread::spawn(move||{crate::reader_assets::retire(&cache_label);if let Err(e)=crate::history::release_archive_cache(&copy){eprintln!("Archive cache cleanup: {e}");}});
                 }
             });
+        } else {
+            if let Ok(mut store)=app_for_thread.state::<SessionStore>().lock(){store.remove(&label_for_thread);}
+            crate::reader_assets::retire(&label_for_thread);
         }
     });
 

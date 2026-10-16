@@ -6,7 +6,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("build-roundtrip-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let project = root.join("project.json"); fs::write(&project, b"old version").unwrap();
-        let mut session = ViewerSession { project_id: Uuid::new_v4().to_string(), project_name: "Naruto".into(), viewer_id: "icc-original".into(), cheats_enabled: false, file_path: project.to_string_lossy().into_owned(), fingerprint: fingerprint(&project).unwrap(), theme: "mocha".into(), cyoa_font: "system-ui".into() };
+        let mut session = ViewerSession {font_preference:String::new(), project_id: Uuid::new_v4().to_string(), project_name: "Naruto".into(), viewer_id: "icc-original".into(), cheats_enabled: false, file_path: project.to_string_lossy().into_owned(), fingerprint: fingerprint(&project).unwrap(), theme: "mocha".into(), cyoa_font: "system-ui".into() };
         let store = root.join("builds");
         let saved = handle_at(&store, &session, "POST", br#"{"name":"Hard mode","content":"choice-a,choice-b/ON#2"}"#).unwrap();
         assert_eq!(saved["project_id"], session.project_id);

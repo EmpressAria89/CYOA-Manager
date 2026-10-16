@@ -53,10 +53,12 @@ The browser installation follows [Playwright's browser setup](https://playwright
 
 The existing application identifier is preserved to keep native viewer storage compatible. Alias mappings are separate from library metadata. ICC2 Plus presentation patches leave its shared requirement checker and row navigation gates intact. New viewer bundles must revalidate adapter gates; unsupported bundles do not advertise hidden-choice previews.
 
-## GitHub preparation
+## Maintenance and publication
 
-Publish the source repository, not the outer installed workspace. Do not add local runtime binaries, backup snapshots, personal CYOAs, browser profiles, private test results or generated build output. The original `origin` may still point to upstream; set the intended fork destination before pushing. Linux CI builds/checks only Linux and uploads a testable runtime artifact; it does not automatically publish a release.
+Start from [HANDOFF.md](../HANDOFF.md). The [audit](audit-2026-10-16.md) records verification limits; the [roadmap](roadmap.md) separates future proposals from implemented behavior.
 
-## Publication
+Run `python3 tests/check-project-layout.py` before delivery. It checks documentation links, source/export privacy boundaries, Python/shell syntax, version agreement and Linux-only configuration. `python3 scripts/prepare-github.py` creates a verified source archive without attaching Git or uploading anything. Follow [GitHub publication](github-publication.md) for the separate review checkout.
 
-Publish only this source repository, not its parent installed workspace. `origin` targets [EmpressAria89/CYOA-Manager](https://github.com/EmpressAria89/CYOA-Manager); no upstream remote is configured. Upstream is credited by link only; updates are taken from this fork, with no automatic merge or download of upstream platform releases. Keep personal data, backups, native profiles, private test results, dependencies and build output out of commits. The bundled catalog is public reference data; viewer engines are required runtime assets. ICC Original is an explicit legacy fallback; Om1cr0n handles its separate `perks` format.
+The local installed source stays detached. Preserved external Git metadata records the last publication; it does not mean current local files are already uploaded. Only the fork is a publication destination; upstream is credited by link. There are no automatic upstream merges or Windows/macOS release jobs.
+
+ICC Original remains an explicit legacy fallback; Om1cr0n supports its separate `perks` format. Keep both engines until removing their runtime dependencies is an intentional compatibility change. The bundled catalog is public reference data; generated runtime/source packages belong in ignored `release/`.

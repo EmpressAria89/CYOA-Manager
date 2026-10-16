@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useLibrary } from "../composables/useLibrary";
 import { useSettings } from "../composables/useSettings";
@@ -47,6 +47,10 @@ const authors = metadataOptions("author");
 const fandoms = metadataOptions("fandom");
 const modders = metadataOptions("modder");
 const sort = ref<SortKey>("favorite_date_added");
+const filtersActive = computed(() => Boolean(search.value || tagFilter.value || authorFilter.value || fandomFilter.value || modFilter.value || modderFilter.value || statusFilter.value));
+function clearFilters() {
+  search.value = tagFilter.value = authorFilter.value = fandomFilter.value = modFilter.value = modderFilter.value = statusFilter.value = "";
+}
 
 const showAdd = ref(false);
 const showBulk = ref(false);
@@ -64,6 +68,8 @@ const redownloadingProjectId = ref<string | null>(null);
 const redownloadStatus = ref<string | null>(null);
 let redownloadProgressUnlisten: UnlistenFn | null = null;
 let activeRedownloadTaskId = "";
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; void clearRedownloadListener(); });
 
 type CatalogProgressPayload = {
   taskId: string;
@@ -144,7 +150,7 @@ function matchesLibrarySearch(project: Project, tokens: LibrarySearchToken[]): b
 }
 
 onMounted(async () => {
-  await loadLibrary();
+  await loadLibrary(true);
   migrationNotice.value = await takeLibraryMigrationNotice();
 });
 
@@ -278,6 +284,7 @@ async function onRedownload(project: Project, forceUpdate = false) {
       alert(message);
     });
 
+    if (disposed) { await clearRedownloadListener(); return; }
     await startOverwriteCatalogEntry(
       taskId,
       project.id,
@@ -349,6 +356,8 @@ async function onRedownload(project: Project, forceUpdate = false) {
         <option value="name">Name A–Z</option>
       </select>
 
+      <button v-if="filtersActive" class="btn-secondary" @click="clearFilters">Clear filters</button>
+
       <div class="project-count">
         {{ projects.length }} {{ projects.length === 1 ? "project" : "projects" }}
       </div>
@@ -383,7 +392,8 @@ async function onRedownload(project: Project, forceUpdate = false) {
       v-else-if="displayedList.length === 0"
       class="center-msg"
     >
-      No projects match your filter.
+      <p>No projects match your filters.</p>
+      <button class="btn-secondary" @click="clearFilters">Clear filters</button>
     </div>
 
     <!-- Card grid -->
@@ -554,7 +564,7 @@ async function onRedownload(project: Project, forceUpdate = false) {
   color: var(--muted);
   font-size: 0.95rem;
 }
-.center-msg.error { color: #e55; }
+.center-msg.error { color: var(--danger); }
 
 .empty-state {
   flex: 1;

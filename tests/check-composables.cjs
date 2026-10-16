@@ -1,0 +1,9 @@
+// Exercise actual Vue composables with controlled backend promises, not copied logic.
+const fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript'),assert=require('node:assert/strict'),vue=require('vue');
+function load(file,invoke){const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(require('node:path').join(__dirname,'..',file),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,console,require:name=>name==='vue'?vue:name==='@tauri-apps/api/core'?{invoke}:name.endsWith('useSettings')?{useSettings:()=>({settings:vue.ref({cheatsEnabled:false})})}:{resolveAuthor:name=>name}});return exports;}
+(async()=>{
+ let calls=0;const cover=load('src/composables/useCover.ts',async()=>{calls++;if(calls===1)throw Error('temporary failure');return 'recovered-cover';});assert.equal(await cover.resolveCover('file','cover'),null);assert.equal(await cover.resolveCover('file','cover'),'recovered-cover');assert.equal(await cover.resolveCover('file','cover'),'recovered-cover');assert.equal(calls,2);
+ const pending=[];let active=0,max=0;const library=load('src/composables/useLibrary.ts',command=>{assert.equal(command,'get_library');active++;max=Math.max(max,active);return new Promise(resolve=>pending.push(value=>{active--;resolve(value);}));}).useLibrary();
+ const first=library.loadLibrary(true);for(let i=0;i<20;i++)library.loadLibrary(true);assert.equal(pending.length,1);pending.shift()([{id:'older',author:'Source',tags:[]}]);await new Promise(setImmediate);assert.equal(pending.length,1);pending.shift()([{id:'latest',author:'Source',tags:[]}]);await first;assert.equal(library.projects.value[0].id,'latest');assert.equal(max,1);assert.equal(pending.length,0);
+ console.log('Composables: failed cover resolution retries; simultaneous forced refreshes coalesce and retain the newest response.');
+})().catch(error=>{console.error(error);process.exit(1)});

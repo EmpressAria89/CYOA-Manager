@@ -79,18 +79,20 @@ const emit = defineEmits<{
 }
 
 .oversize-action-primary {
-  background: linear-gradient(135deg, #3f86ff, #2f68d6);
-  color: #f6fbff;
+  background: var(--accent);
+  color: var(--accent-text);
 }
 
 .oversize-action-accent {
-  background: linear-gradient(135deg, #2db38a, #248e6d);
-  color: #f3fffa;
+  background: var(--input-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .oversize-action-muted {
-  background: #4f5665;
-  color: #e8ebf2;
+  background: var(--input-bg);
+  color: var(--text);
+  border-color: var(--border);
 }
 
 .oversize-action-btn:not(:disabled):hover {

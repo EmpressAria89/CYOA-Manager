@@ -251,7 +251,7 @@ h2 { margin: 0; }
 .sub { margin: 0; font-size: 0.9rem; color: var(--muted); }
 .scan-status { margin: 0; font-size: 0.95rem; color: var(--text); }
 .scan-meta { margin: 0; font-size: 0.85rem; color: var(--muted); }
-.error-text { margin: 0; font-size: 0.85rem; color: #d16a6a; }
+.error-text { margin: 0; font-size: 0.85rem; color: var(--danger); }
 code { color: var(--accent); }
 .list-header {
   display: flex;

@@ -104,6 +104,11 @@
           overlayRoot.innerHTML = markup;
           applyTheme(host);
           document.body.appendChild(host);
+          if(window.__cyoaManagerDock){
+            var dock=window.__cyoaManagerDock(), original=findControl(buttonId);
+            var button=document.createElement("button");button.textContent="Cheats";button.title="Cheat menu";
+            button.onclick=function(){window.__cyoaManagerPresentation?.close();original.click();};dock.querySelector("nav").appendChild(button);original.hidden=true;
+          }
         }
       })
       .catch(function (_error) {

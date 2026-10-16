@@ -46,7 +46,7 @@ onMounted(async () => {
   await loadAuthorAliases().catch(e=>maintenanceError.value=`Author aliases: ${String(e)}`);
   await loadLibrary();
   await loadViewers();
-  void (async () => { await invoke("enrich_library_metadata"); await invoke("reconcile_imported_archives"); await invoke("optimize_storage"); await loadLibrary(true); await invoke("enrich_catalog_metadata"); await loadLibrary(true); })().catch(e=>maintenanceError.value=`Storage maintenance: ${String(e)}`);
+  void (async () => { const metadata=await invoke<number>("enrich_library_metadata"); const reconciled=await invoke<number>("reconcile_imported_archives"); await invoke("optimize_storage"); if(metadata||reconciled)await loadLibrary(true); if(await invoke<number>("enrich_catalog_metadata"))await loadLibrary(true); })().catch(e=>maintenanceError.value=`Storage maintenance: ${String(e)}`);
 });
 
 async function openRandomProject() {
@@ -209,6 +209,7 @@ function splitReleaseVersion(version: string): number[] {
   --tag-color: #89b4fa;
   --cover-placeholder: #313244;
   --danger: #f38ba8;
+  --success: #a6e3a1;
   --accent-text: #1e1e2e;
   color-scheme: dark;
 }
@@ -229,6 +230,7 @@ function splitReleaseVersion(version: string): number[] {
   --tag-color: #1e66f5;
   --cover-placeholder: #ccd0da;
   --danger: #d20f39;
+  --success: #28731d;
   --accent-text: #eff1f5;
   color-scheme: light;
 }
@@ -249,6 +251,7 @@ function splitReleaseVersion(version: string): number[] {
   --tag-color: #8caaee;
   --cover-placeholder: #414559;
   --danger: #e78284;
+  --success: #a6d189;
   --accent-text: #303446;
   color-scheme: dark;
 }
@@ -269,6 +272,7 @@ function splitReleaseVersion(version: string): number[] {
   --tag-color: #8aadf4;
   --cover-placeholder: #363a4f;
   --danger: #ed8796;
+  --success: #a6da95;
   --accent-text: #24273a;
   color-scheme: dark;
 }
@@ -336,6 +340,11 @@ input, textarea, button, select { font-family: inherit; }
 input, textarea, button, select, label {font-weight:400 !important;}
 h1,h2,h3 {font-weight:600;}
 input, textarea { user-select: text; }
+:where(button, a, input, textarea, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}
 
 /* ── Scrollbar ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }

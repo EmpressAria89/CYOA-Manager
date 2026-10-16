@@ -1,9 +1,9 @@
 <style>
   :host { all: initial !important; position: fixed !important; inset: 0 !important; pointer-events: none !important; z-index: 2147483647 !important; }
   *, *::before, *::after { box-sizing: border-box; }
-  #cyoa-manager-viewer-panel, #cyoa-manager-viewer-gear { pointer-events: auto; font: 400 12px/1.4 system-ui, sans-serif; color: var(--text); }
+  #cyoa-manager-viewer-panel, #cyoa-manager-viewer-gear { pointer-events: auto; font: 400 15px/1.5 system-ui, sans-serif; color: var(--text); }
   #cyoa-manager-viewer-gear {
-    position: fixed; right: 8px; bottom: 8px; width: 30px; height: 30px;
+    position: fixed; right: 8px; bottom: 8px; width: 40px; height: 40px;
     border: 1px solid var(--border); border-radius: 8px; display: inline-flex;
     align-items: center; justify-content: center; background: var(--surface);
     cursor: pointer;
@@ -11,20 +11,20 @@
   #cyoa-manager-viewer-gear:hover { background: var(--hover); }
   #cyoa-manager-viewer-gear svg { width: 16px; height: 16px; }
   #cyoa-manager-viewer-panel {
-    position: fixed; right: 8px; bottom: 46px; width: min(260px, calc(100vw - 16px));
-    padding: 12px; border: 1px solid var(--border); border-radius: 12px;
+    position: fixed; right: 8px; bottom: var(--manager-panel-bottom, 108px); width: min(420px, calc(100vw - 16px)); max-height: calc(100vh - var(--manager-panel-bottom, 108px) - 12px); overflow: auto;
+    padding: 22px; border: 1px solid var(--border); border-radius: 12px;
     background: var(--base); box-shadow: 0 14px 34px #0004;
   }
-  #cyoa-manager-viewer-panel[hidden] { display: none; }
-  .cyoa-manager-panel-title { font-weight: 400; margin-bottom: 10px; }
+  #cyoa-manager-viewer-panel[hidden], #cyoa-manager-viewer-gear[hidden] { display: none; }
+  .cyoa-manager-panel-title { font-weight: 500; font-size: 19px; margin-bottom: 16px; }
   .cyoa-manager-field { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 6px; }
   .cyoa-manager-row-field { display: flex; gap: 8px; margin-top: 10px; }
-  .cyoa-manager-field-label { color: var(--subtext); font-size: 11px; }
-  select, input, button { font: 400 12px/1.4 system-ui, sans-serif; }
+  .cyoa-manager-field-label { color: var(--subtext); font-size: 14px; }
+  select, input, button { font: 400 15px/1.5 system-ui, sans-serif; }
   #cyoa-manager-viewer-panel select, #cyoa-manager-viewer-panel input, .cyoa-manager-action-button {
     width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 8px;
     background: var(--surface); color: var(--text); -webkit-text-fill-color: var(--text);
-    padding: 7px 9px; color-scheme: var(--scheme);
+    padding: 11px 12px; min-height: 44px; color-scheme: var(--scheme);
   }
   #cyoa-manager-viewer-panel select {
     appearance: none; -webkit-appearance: none; padding-right: 24px;

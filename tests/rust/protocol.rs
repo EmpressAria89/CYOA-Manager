@@ -3,7 +3,7 @@ mod reveal_tests {
     use super::*;
     #[test]
     fn reader_override_uses_regular_weight_for_authored_containers_and_headings() {
-        let mut session = crate::models::ViewerSession {
+        let mut session = crate::models::ViewerSession {font_preference:String::new(),
             project_id: "fixture".into(), viewer_id: "icc2-plus".into(),
             cheats_enabled: false, file_path: String::new(), project_name: "Fixture".into(),
             fingerprint: String::new(), theme: "mocha".into(), cyoa_font: "serif".into(),
@@ -27,10 +27,18 @@ mod reveal_tests {
         let checker=original.split("function Wo(").nth(1).unwrap().split("function ").next().unwrap();
         assert!(patched.contains(&format!("function Wo({checker}")));
         assert!(patched.contains("t.row.deselectChoices&&!v(p)"));
-        for gate in ["ee(J,e=>{v(p)&&e(Z)})", "ee(X,e=>{v(p)&&e(K)})", ".concat(v(p)?\"\":\" hidden\")"] {
+        for gate in ["ee(J,e=>{v(p)&&v(managerVisible)&&e(Z)})", "ee(X,e=>{v(p)&&v(managerVisible)&&e(K)})", ".concat(v(p)&&v(managerVisible)?\"\":\" hidden\")"] {
             assert!(patched.contains(gate), "navigation gate must remain intact: {gate}");
         }
         assert!(!patched.contains("app.managerRevealHidden||v(p)"));
+        assert_eq!(patched.matches("window.__cyoaManagerImages.setSource(").count(),37);
+        assert!(!patched.contains("app.preloadExternalImages&&"));
+        assert!(patched.contains("style(o,v(m),\"score\",managerScoreKind())"));
+        assert!(patched.contains("style(t,v(N),\"title\")"));
+        assert!(patched.contains("style(t,v(G),\"description\")"));
+        assert!(patched.contains("__cyoaManagerPresentation.card(i)"));
+        if let Ok(path)=std::env::var("CYOA_NATIVE_BUNDLE"){std::fs::write(path,&patched).unwrap();}
+
         assert_eq!(patched.matches("get isEnabled(){return v(S)}").count(),original.matches("get isEnabled(){return v(S)}").count());
     }
     #[test]

@@ -46,6 +46,7 @@ const description = ref(props.project.description);
 const cover = ref(props.project.cover_image ?? "");
 const sourceUrl = ref(props.project.source_url ?? "");
 const viewerPreference = ref(props.project.viewer_preference ?? "");
+const fontPreference = ref(props.project.font_preference ?? "");
 const excludeFromPerkIndex = ref(props.project.exclude_from_perk_index);
 const coverPreviewError = ref(false);
 const directJsonCopyStatus = ref("");
@@ -63,6 +64,7 @@ watch(() => props.project, (project) => {
   cover.value = project.cover_image ?? "";
   sourceUrl.value = project.source_url ?? "";
   viewerPreference.value = project.viewer_preference ?? "";
+  fontPreference.value = project.font_preference ?? "";
   excludeFromPerkIndex.value = project.exclude_from_perk_index;
   directJsonCopyStatus.value = "";
 }, { deep: true });
@@ -110,6 +112,7 @@ function save(force = false) {
     cover_image: cover.value,
     source_url: sourceUrl.value,
     viewer_preference: viewerPreference.value,
+    font_preference: fontPreference.value,
     exclude_from_perk_index: excludeFromPerkIndex.value,
     tags: normalizeTags(tags.value),
   };
@@ -167,6 +170,15 @@ function save(force = false) {
             {{ viewer.id === "icc-original" || viewer.name.toLowerCase() === "icc original" ? "Force ICC Original (legacy)" : viewer.name }}
           </option>
         </select>
+      </label>
+
+      <label>CYOA typography
+        <select v-model="fontPreference" aria-label="CYOA typography">
+          <option value="">Use global setting</option>
+          <option value="author">Author default</option>
+          <option value="custom">My CYOA font</option>
+        </select>
+        <span class="hint">Applies when this CYOA is reopened. Your custom font is configured in Settings.</span>
       </label>
 
       <label>Cover image URL or path

@@ -29,3 +29,12 @@ mod snapshot_tests {
  }
  #[test]fn staging_is_removed_on_later_error(){let path=std::env::temp_dir().join(format!("cyoa-staging-test-{}",uuid::Uuid::new_v4()));fs::create_dir(&path).unwrap();{let _guard=Staging(path.clone(),false);}assert!(!path.exists());}
 }
+
+#[cfg(test)]mod committed_snapshot_tests {
+ use super::*;
+ #[test]fn committed_files_survive_a_later_cleanup_error(){
+  let path=std::env::temp_dir().join(format!("cyoa-committed-test-{}",uuid::Uuid::new_v4()));fs::create_dir(&path).unwrap();fs::write(path.join("project.json"),"committed").unwrap();
+  let later_error=(||->Result<(),String>{let mut staging=Staging(path.clone(),false);staging.1=true;Err("Simulated retention failure after database commit".into())})();
+  assert!(later_error.is_err());assert_eq!(fs::read_to_string(path.join("project.json")).unwrap(),"committed");fs::remove_dir_all(path).unwrap();
+ }
+}
