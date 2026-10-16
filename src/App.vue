@@ -7,6 +7,8 @@ import { useAuthorAliases } from "./composables/useAuthorAliases";
 import { useSettings } from "./composables/useSettings";
 import { useLibrary } from "./composables/useLibrary";
 import { resolveViewerId } from "./viewers";
+import CompatibilityDialog from "./components/CompatibilityDialog.vue";
+import { compatibilityWarning } from "./composables/useCompatibility";
 
 const GITHUB_RELEASES_LATEST_URL = "https://api.github.com/repos/EmpressAria89/CYOA-Manager/releases/latest";
 
@@ -127,6 +129,7 @@ function splitReleaseVersion(version: string): number[] {
 </script>
 
 <template>
+  <CompatibilityDialog />
   <div v-if="changeReport" class="changes-overlay" @click.self="changeReport=null"><section class="changes-panel" role="dialog" aria-label="Update differences">
     <h2>{{changeReport.projectName}} — Update differences</h2>
     <p v-if="!changeReport.diff.changed">No content changes found. Kept the current edition.</p>
@@ -134,7 +137,7 @@ function splitReleaseVersion(version: string): number[] {
     <template v-for="(entries,category) in {Added:changeReport.diff.added,Removed:changeReport.diff.removed,Changed:changeReport.diff.edited,Other:changeReport.diff.other_changes}" :key="category"><h3 v-if="entries.length">{{category}}</h3><ul><li v-for="entry in entries" :key="entry">{{entry}}</li></ul></template>
     <button class="btn-primary" @click="changeReport=null">Close</button>
   </section></div>
-  <div class="app">
+  <div class="app" :inert="!!compatibilityWarning">
     <nav class="sidebar">
       <div class="brand">CYOA<br /><span>Manager</span></div>
       <RouterLink to="/" class="nav-link" active-class="active">

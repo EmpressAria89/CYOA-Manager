@@ -11,7 +11,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIRECTORIES = {'src', 'src-tauri', 'public', 'scripts', 'tests', 'docs', '.github', '.vscode'}
-FILES = {'README.md', 'HANDOFF.md', 'LICENSE', '.gitignore', 'package.json', 'pnpm-lock.yaml',
+FILES = {'AGENTS.md', 'GLOSSARY.md', 'README.md', 'HANDOFF.md', 'LICENSE', '.gitignore', 'package.json', 'pnpm-lock.yaml',
          'pnpm-workspace.yaml', 'index.html', 'tsconfig.json', 'tsconfig.node.json', 'vite.config.ts'}
 SKIP = {'.git', 'node_modules', 'target', 'dist', 'release', 'save', 'cyoas', 'graft', '__pycache__',
         'results', 'fixtures', 'validation', 'backups', 'gen'}

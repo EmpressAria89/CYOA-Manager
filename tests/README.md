@@ -4,8 +4,8 @@ All retained checks are here. Run commands from the repository root.
 
 ```bash
 python3 tests/check-project-layout.py
-pnpm test:rust
 pnpm build
+pnpm test:rust
 pnpm exec playwright install chromium
 pnpm test:ui
 ```
@@ -54,3 +54,7 @@ python3 tests/check-startup-failure.py --binary src-tauri/target/release/cyoa-ma
 ```
 
 The startup check launches and terminates only its own test process, uses isolated manager/XDG directories, and verifies that an invalid SQLite fixture remains unchanged while the app stays open to report the error. Neither helper operates on the running user's app or live browser profile.
+
+The compatibility suite checks Remix/script detection without executing expressions, ordinary ICC2 variable defaults, actionable source/website-copy warnings, separate card creation and explicit bundled-viewer bypass. The streaming inspector skips artwork. A recognised structure is not a certification of all creator-specific extensions.
+
+Catalog fixtures exercise restart/offline cache reads, forced/partial refresh, routed source identities, metadata and alias search, ambiguous links, bounded pages, explicit recovery, preview/discard/apply, selection across filters, serial queue stopping and retry. Browser fixtures mock Tauri; Rust fixtures use isolated temporary data and local HTTP responses. They do not migrate or download into the live library.

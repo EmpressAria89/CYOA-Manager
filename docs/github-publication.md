@@ -44,3 +44,5 @@ Use a current appropriate commit message for later work. If the push is rejected
 ## Preserved local history
 
 The installed workspace's `backups/README.md` points to preserved external Git metadata and its `REATTACH-GIT.md`. It remains an alternative for recovering local history; there is no need to move it into `app/.git` merely to produce an export. Its recorded publication commit is historical and does not imply that newer local edits are uploaded.
+
+The local catalog redesign uses Markdown tickets under ignored `.scratch/`; its canonical specification, glossary, ADR and agent configuration are included in source exports. Review runtime cache files and local task/evidence folders only outside the export. Source preparation does not attach Git.

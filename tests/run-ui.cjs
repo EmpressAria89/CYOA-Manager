@@ -6,7 +6,7 @@ let failure=null;server.on('error',e=>failure=e);server.on('exit',code=>{if(code
 const ready=()=>new Promise(resolve=>{http.get(url,r=>{r.resume();resolve(r.statusCode===200)}).on('error',()=>resolve(false));});
 (async()=>{try{
  for(let i=0;i<100;i++){if(failure)throw failure;if(await ready())break;if(i===99)throw new Error('Preview failed to start');await new Promise(r=>setTimeout(r,100));}
- for(const file of ['check-composables.cjs','check-manager-lifecycle.cjs','check-viewer-sections.cjs','check-archive-management.cjs','smoke-ui.cjs','check-ui-revision.cjs','check-author-aliases.cjs','check-viewer-dock.cjs','check-viewer-cheats.cjs','check-viewer-images.cjs','check-viewer-presentation.cjs']){
+ for(const file of ['check-catalog-queue.cjs','check-catalog-discovery.cjs','check-catalog-downloads.cjs','check-compatibility.cjs','check-composables.cjs','check-manager-lifecycle.cjs','check-viewer-sections.cjs','check-archive-management.cjs','smoke-ui.cjs','check-ui-revision.cjs','check-author-aliases.cjs','check-viewer-dock.cjs','check-viewer-cheats.cjs','check-viewer-images.cjs','check-viewer-presentation.cjs']){
   const result=spawnSync(process.execPath,[`tests/${file}`],{stdio:'inherit',env:{...process.env,CYOA_TEST_URL:url}});if(result.status!==0)throw new Error(`${file} failed (${result.status})`);
  }
 }finally{server.kill('SIGTERM');}})().catch(e=>{console.error(e.message);process.exitCode=1});

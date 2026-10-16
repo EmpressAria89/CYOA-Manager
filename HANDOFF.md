@@ -4,7 +4,7 @@ Audit date: 2026-10-16. This fork develops and tests **Linux x86_64**. The manag
 
 ## Start here
 
-1. Read [the audit](docs/audit-2026-10-16.md) for current evidence and limitations.
+1. Read [skill assurance](docs/skills-assurance.md) for the latest review and [the historical audit](docs/audit-2026-10-16.md) for its evidence and limitations.
 2. Read [development](docs/development.md), [tests](tests/README.md) and [storage/recovery](docs/storage-and-recovery.md).
 3. Choose one bounded item from [the roadmap](docs/roadmap.md), with its acceptance conditions.
 4. Before publishing, follow [GitHub publication](docs/github-publication.md). Publication remains a separate, explicit action.
@@ -53,3 +53,19 @@ Bridge patches target exact minified bundle markers. If a viewer changes, revali
 ## Delivery gate
 
 Run source/privacy/docs checks, TypeScript/Vite build, Rust tests, browser checks and the relevant native WebKit scenario. Verify packaged/executable hashes and embedded assets. Install atomically without stopping a user's active reader. Ask the user to save builds and restart afterward. Keep local data, private fixtures, screenshots and logs outside the published source. Do not auto-fetch upstream, add platform release jobs, push or reattach Git as a side effect of preparing an export.
+
+## Local follow-up: scripted viewer compatibility
+
+After publication `2de3c7e`, added `compatibility.rs`, a streaming, read-only preflight for Remix scripts and variable operations. Built-in reader opening (including archives) now warns with source-site/separate-website-copy/explicit-bypass actions. Import metadata no longer claims these exports are ICC2-compatible. No script converter is enabled; implement only exact, tested operation mappings in a derived copy with explicit build identity rules. The existing included-viewer downloader recognizes legacy `app.js`/`core.js` layouts, not every Remix site's loader; use the separate website-copy path for those sites. This follow-up is not published to GitHub.
+
+Validation: parser regression tests, real Fire Emblem export inspection (1,402 expressions; 24 unsupported variable modifications), full Rust suite, 12 browser suites and source/export/embedded-assets gates. The local runtime was installed atomically; restart the manager to load it. The previous runtime package and validation logs are retained under the private audit backup's `viewer-compatibility/` directory. Personal exports and builds were not changed.
+
+## Local catalog redesign
+
+Catalog work follows [the specification](docs/specs/catalog-redesign.md), [domain decisions](docs/adr/0001-catalog-and-edition-identities.md) and [catalog guide](docs/catalog.md). Local tickets are under ignored `.scratch/catalog-redesign/issues/`. An organized pre-change source snapshot, implementation/review checkpoint and validation evidence are indexed by the outer workspace's backup index. Read that checkpoint before resuming interrupted work. This redesign is local and unpublished; the last GitHub publication remains `2de3c7e`. Git stays detached.
+
+Catalog validation: 57 Rust tests passed (1 optional test ignored), 15 browser suites passed, and TypeScript/Vite and embedded-asset checks passed. Cached catalog reads remain available while a refresh runs. Delivery receipts and rollback packages are indexed by the outer `backups/catalog-redesign/state.json`; consult that file for the installed executable and package hashes. No source has been pushed; Git remains detached. Restart the manager after installation to load the new executable.
+
+## Assurance follow-up
+
+[Skill assurance](docs/skills-assurance.md) records requirement coverage and review corrections without reverting later changes. [Next reliability slices](docs/specs/assurance-followups.md) specify the remaining direct update-commit integration proof and measured efficiency work. Completed catalog tickets are marked done; future slices remain open. The installed workspace backup index identifies final validation, rollback and delivery hashes.

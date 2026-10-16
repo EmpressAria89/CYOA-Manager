@@ -78,3 +78,13 @@ Choose **This CYOA** to pin a section’s font and size for that project. **Glob
 Under **Layout and colors**, **Choice scale** shrinks/enlarges the CYOA and adjusts choice widths proportionally so more/fewer cards fit where the authored layout permits. Headers, order, image proportions and game rules are preserved. Text size can be adjusted independently. Cost badges use red, gains use green, and assigned values use blue; classification follows the viewer’s score/discount sign. Turn off **Distinct cost / gain colors** to restore author score styling.
 
 **Display → Hide sections** automatically hides dependent sub-sections when their parent tab is closed (ICC2 Plus). It follows unambiguous positive choice dependencies; complex OR/group rules stay author-controlled. Disable automatic hiding globally or for one CYOA. Under **This CYOA**, uncheck individual sections to hide them, then **Apply and save**. Recheck to show them again when their authored requirements allow, or **Reset section** to clear hiding preferences. Hidden sections retain every selected choice and point effect.
+
+## Scripted and Remix projects
+
+The built-in viewers cannot preserve ICC Remix scripts or variable operations. Before opening a JSON edition with a bundled viewer, the manager inspects these fields without executing scripts or changing the export. A warning offers the source website, a separate website copy with its own viewer, or an explicit attempt with the bundled viewer. This also applies to archives. Website copies have separate identities; manager builds do not transfer automatically. Dynamic resources can still need the network, so test the copy offline before relying on it.
+
+ICC2 structural recognition is not a playability guarantee. No automatic script conversion is enabled: a converter needs verified mappings for every used operation, including score effects and saved-build semantics. Downloaded standalone viewer bundles are not certified by this check; use only a trusted source matching the edition.
+
+## Catalog discovery
+
+See [the catalog guide](catalog.md) for offline searching, aliases/qualified queries, source freshness, explicit recovery and update previews. Catalog dates/status do not establish the latest playable edition or your completion state.

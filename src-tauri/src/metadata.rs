@@ -21,7 +21,8 @@ pub fn description(json: &Value) -> String {
         .map(plain).unwrap_or_default().chars().take(1200).collect()
 }
 pub fn icc2_compatible(json: &Value) -> bool {
-    json["pointTypes"].is_array() && json["styling"].is_object()
+    !crate::compatibility::inspect_value(json).needs_native_viewer()
+        && json["pointTypes"].is_array() && json["styling"].is_object()
         && json["rows"].as_array().is_some_and(|rows| rows.iter().all(|r| r["objects"].is_array()
         && r["objects"].as_array().unwrap().iter().all(|c| c["id"].is_string())))
 }
@@ -41,7 +42,7 @@ pub fn infer(json: &Value, name: &str) -> ProjectMetadata {
     let completion = text(json, &["completion", "status", "projectStatus"]);
     let lower = name.to_lowercase();
     let is_mod = json["is_mod"].as_bool().or(json["isMod"].as_bool()).unwrap_or(lower.contains("(mod)") || lower.contains(" mod") || lower.contains("remix"));
-    let viewer_check = if icc2_compatible(json) { "ICC2 Plus format check passed" } else if json["rows"].as_array().is_some_and(|r| r.iter().any(|r| r["perks"].is_array())) { "Om1cr0n format" } else { "ICC2 Plus format needs review; legacy viewer available" };
+    let viewer_check = if crate::compatibility::inspect_value(json).needs_native_viewer() { "Original website viewer required; scripted/Remix features are not safely convertible to ICC2" } else if icc2_compatible(json) { "ICC2 Plus structure recognized; playability not verified" } else if json["rows"].as_array().is_some_and(|r| r.iter().any(|r| r["perks"].is_array())) { "Om1cr0n format" } else { "ICC2 Plus format needs review; legacy viewer available" };
     let (author, inferred_modder)=split_credits(&author);
     let explicit_modder=text(json,&["modder","modAuthor"]);
     ProjectMetadata { title, author, modder: if explicit_modder.is_empty(){inferred_modder}else{explicit_modder}, kind:String::new(),metadata_revision:2,fandom, completion, is_mod, viewer_check: viewer_check.into(), restored_from_archive: false, font_preference: String::new() }

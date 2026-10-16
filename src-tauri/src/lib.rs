@@ -4,6 +4,7 @@ compile_error!("Standalone release builds require --features custom-protocol; wi
 mod commands;
 mod metadata;
 mod catalog_metadata;
+mod catalog_download;
 mod author_aliases;
 mod websites;
 mod update_diff;
@@ -17,6 +18,7 @@ mod models;
 mod perk_index;
 mod protocol;
 mod reader_assets;
+mod compatibility;
 mod reader_settings;
 
 use tauri::Manager;
@@ -54,7 +56,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(target_os = "linux")]
-            reader_assets::cleanup_stale();
+            { reader_assets::cleanup_stale(); catalog_download::cleanup_stale(); }
             if let Some(main)=app.get_webview_window("main") {
                 main.set_background_color(Some(preferences::background_color(&preferences::load().theme)))?;
                 #[cfg(target_os = "linux")]
@@ -89,6 +91,12 @@ pub fn run() {
             metadata::enrich_library_metadata,
             catalog_metadata::enrich_catalog_metadata,
             catalog_metadata::get_catalog_rows,
+            catalog_metadata::get_catalog_snapshot,
+            catalog_download::inspect_catalog_download,
+            catalog_download::import_catalog_download,
+            catalog_download::preview_catalog_update,
+            catalog_download::apply_catalog_update,
+            catalog_download::discard_catalog_update,
             metadata::find_duplicates,
             preferences::set_preferences,
             preferences::get_fonts,

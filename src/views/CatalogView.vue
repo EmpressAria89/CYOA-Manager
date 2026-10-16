@@ -1,25 +1,41 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { resolveAuthor } from "../composables/useAuthorAliases";
-import { normalizeTags } from "../catalogTags";
+import { resolveAuthor, useAuthorAliases } from "../composables/useAuthorAliases";
+import { normalizeCatalogSnapshot, catalogUrl, catalogKey, indexCatalogEntry, parseCatalogSearch, matchesCatalogSearch, type CatalogSnapshot } from "../catalogDiscovery";
+import CatalogDownloadDialog from "../components/CatalogDownloadDialog.vue";
+import { catalogMetadataPatch } from "../catalogImport";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { CatalogEntry, OversizeActionStrategy, Project } from "../types";
+import type { CatalogEntry, Project } from "../types";
 import { useLibrary } from "../composables/useLibrary";
 import { useSettings } from "../composables/useSettings";
-import ProgressBar from "../components/ProgressBar.vue";
-import OversizeActionPrompt from "../components/OversizeActionPrompt.vue";
 
 const LOCAL_CATALOG_URL = "/zip_link_catalog_data.js";
 
-const { projects, loadLibrary, startDownloadCatalogEntry, startOverwriteCatalogEntry, startApplyOversizeProjectAction, setProjectFavorite, updateProject } = useLibrary();
+const { projects, loadLibrary, setProjectFavorite, updateProject } = useLibrary();
 const { settings } = useSettings();
 
 const entries = ref<CatalogEntry[]>([]);
 const loading = ref(false);
 const addingLink = ref<string | null>(null);
 const error = ref<string | null>(null);
+const selectedDownloadEntry = ref<CatalogEntry | null>(null);
+const selectedDownloadProjects = computed(() => selectedDownloadEntry.value ? matchingLibraryProjects(selectedDownloadEntry.value) : []);
+const selectedDownloadProject = computed(() => {
+  const matches = selectedDownloadProjects.value, current = matches.filter(p => !p.restored_from_archive);
+  return current.length === 1 ? current[0] : matches.length === 1 ? matches[0] : null;
+});
+const { authors, loadAuthorAliases } = useAuthorAliases();
+const snapshot = ref<CatalogSnapshot | null>(null);
+const advancedFilters = ref(false);
+const page = ref(1);
+const PAGE_SIZE = 48;
+const membershipFilter = ref('');
+const statusFilter = ref('');
+const sourceFilter = ref('');
+const showDiscoveries = ref(false);
+const stopBatch = ref(false);
+const failedKeys = ref<string[]>([]);
 const search = ref("");
 const sort = ref<"name" | "date">("date");
 const authorFilter = ref("");
@@ -32,108 +48,71 @@ const tagFilter = ref("");
 const favoriteFilter = ref<"all" | "favorites">("all");
 const successMessage = ref<string | null>(null);
 const addStatus = ref("");
-const addProgress = ref(0);
-const addSizeText = ref("");
-const addImageCurrent = ref(0);
-const addImageTotal = ref(0);
-const showOversizePrompt = ref(false);
-const oversizeProjectId = ref("");
-const oversizeMb = ref(0);
-const oversizeLimitMb = ref(0);
-const oversizeActionInProgress = ref(false);
-const rememberOversizeChoice = ref(false);
-const batchOversizeAction = ref<OversizeActionStrategy | null>(null);
 const selectedCatalogKeys = ref<string[]>([]);
 const batchDownloadInProgress = ref(false);
 const batchDownloadCompleted = ref(0);
 const batchDownloadTotal = ref(0);
 const batchDownloadMessage = ref("");
 const batchDownloadFailed = ref(0);
-let catalogProgressUnlisten: UnlistenFn | null = null;
-let imageProgressUnlisten: UnlistenFn | null = null;
-let oversizeActionUnlisten: UnlistenFn | null = null;
-let activeCatalogTaskId = "";
-let activeOversizeTaskId = "";
-let pendingOversizePromptResolver: ((success: boolean) => void) | null = null;
-
-type CatalogProgressPayload = {
-  taskId: string;
-  phase: string;
-  current: number;
-  total: number;
-  message: string;
-  done: boolean;
-  success: boolean;
-  error?: string | null;
-};
-
-type DownloadImageProgressPayload = {
-  taskId: string;
-  phase: string;
-  current: number;
-  total: number;
-  imageCurrent: number;
-  imageTotal: number;
-  message: string;
-  done: boolean;
-  success: boolean;
-  error?: string | null;
-};
-
-type OversizeActionPayload = {
-  taskId: string;
-  projectId: string;
-  phase: string;
-  message: string;
-  done: boolean;
-  success: boolean;
-  error?: string | null;
-};
-
 type CatalogListEntry = CatalogEntry & {
   catalogKey: string;
   hostLabel: string | null;
   existingProjectId: string | null;
   existingProjectFavorite: boolean;
+  existingProjectCount: number;
 };
 
 
 
-const existingCatalogProjectByWebsite = computed(() => {
-  const map = new Map<string, Project>();
-
+const libraryProjectsBySource = computed(() => {
+  const map = new Map<string, Project[]>();
   for (const project of projects.value) {
-    const normalizedSourceUrl = normalizeLibrarySourceUrl(project.source_url || "");
-    if (normalizedSourceUrl && !map.has(normalizedSourceUrl)) {
-      map.set(normalizedSourceUrl, project);
+    for (const raw of [project.source_url, project.project_json_url]) {
+      const key = normalizeLibrarySourceUrl(raw || "");
+      if (!key) continue;
+      const matches = map.get(key) || [];
+      if (!matches.some(item => item.id === project.id)) matches.push(project);
+      map.set(key, matches);
     }
   }
-
   return map;
 });
+function matchingLibraryProjects(entry: CatalogEntry): Project[] {
+  const matches = new Map<string, Project>();
+  for (const raw of [entry.website, ...(entry.alternateUrls || []), ...(entry.projectUrls || [])]) {
+    for (const project of libraryProjectsBySource.value.get(normalizeLibrarySourceUrl(raw)) || []) matches.set(project.id, project);
+  }
+  return [...matches.values()];
+}
+function preferredLibraryProject(matches: Project[]): Project | undefined {
+  const current = matches.filter(project => !project.restored_from_archive);
+  return current.length === 1 ? current[0] : matches[0];
+}
 
+function canonicalCatalogAuthors(raw = ''): string[] {
+  // Preserve exact aliases containing separators when explicitly configured.
+  const resolved = resolveAuthor(raw);
+  if(resolved !== raw) return [resolved];
+  return raw.split(/[,;\n]+/).map(name => resolveAuthor(name.trim())).filter(Boolean);
+}
+const indexedList = computed(() => entries.value.map(entry => {
+  const matches = matchingLibraryProjects(entry), existingProject = preferredLibraryProject(matches);
+  const canonicalAuthors = canonicalCatalogAuthors(entry.author);
+  const author = canonicalAuthors.join(", ");
+  const aliases = authors.value.filter(item => canonicalAuthors.includes(item.name)).flatMap(item => [item.name, ...item.aliases]);
+  return { ...entry, source_author: entry.author, author, catalogKey: buildCatalogKey(entry), hostLabel: extractHostLabel(entry.website), existingProjectId: existingProject?.id || null, existingProjectFavorite: matches.some(project => project.favorite), existingProjectCount: matches.length, searchIndex: indexCatalogEntry(entry,author,aliases) };
+}));
 const displayedList = computed(() => {
-  let list: CatalogListEntry[] = entries.value.map((entry) => {
-    const existingProject = existingCatalogProjectByWebsite.value.get(normalizeLibrarySourceUrl(entry.website)) || null;
+  let list = indexedList.value.slice();
+  const tokens = parseCatalogSearch(search.value);
 
-    return {
-      ...entry,
-      source_author:entry.author,
-      author:resolveAuthor(entry.author),
-      catalogKey: buildCatalogKey(entry),
-      hostLabel: extractHostLabel(entry.website),
-      existingProjectId: existingProject?.id || null,
-      existingProjectFavorite: existingProject?.favorite ?? false,
-    };
-  });
-  const tokens = parseCatalogSearchTokens(search.value);
-
+  list = list.filter(entry => (showDiscoveries.value || entry.sourceId !== "discoveries") && (!membershipFilter.value || (membershipFilter.value === "library" ? Boolean(entry.existingProjectId) : !entry.existingProjectId)) && (!statusFilter.value || entry.status === statusFilter.value) && (!sourceFilter.value || entry.sourceId === sourceFilter.value));
   if (tokens.length > 0) {
-    list = list.filter((entry) => matchesCatalogSearch(entry, tokens));
+    list = list.filter((entry) => matchesCatalogSearch(entry.searchIndex, tokens));
   }
 
   if (authorFilter.value) {
-    list = list.filter((entry) => entry.author === authorFilter.value);
+    list = list.filter((entry) => canonicalCatalogAuthors(entry.author).includes(authorFilter.value));
   }
 
   if (universeFilter.value) {
@@ -167,33 +146,39 @@ const displayedList = computed(() => {
   if (sort.value === "name") {
     list.sort((left, right) => left.name.localeCompare(right.name));
   } else {
-    list.sort((left, right) => right.date.localeCompare(left.date));
+    list.sort((left, right) => (Date.parse(right.date) || 0) - (Date.parse(left.date) || 0));
   }
 
   return list;
 });
 
-const authorOptions = computed(() => buildOptionList(entries.value.map((entry) => resolveAuthor(entry.author))));
+const authorOptions = computed(() => buildOptionList(entries.value.flatMap((entry) => canonicalCatalogAuthors(entry.author))));
 const universeOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.universe)));
 const importerOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.importer)));
 const typeOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.type)));
 const povOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.pov)));
 const lengthOptions = computed(() => buildOptionList(entries.value.map((entry) => entry.length)));
 const tagOptions = computed(() => buildOptionList(entries.value.flatMap((entry) => entry.tags || [])));
-const addProgressLabel = computed(() => {
-  const cleaned = stripMegabyteText(addStatus.value).trim();
-  return cleaned || "Adding…";
-});
-const addProgressSubtext = computed(() => {
-  const parts: string[] = [];
-  if (addSizeText.value) {
-    parts.push(`Downloaded: ${addSizeText.value}`);
+const statusOptions = computed(() => buildOptionList(entries.value.map(entry => entry.status)));
+const pageCount = computed(() => Math.max(1, Math.ceil(displayedList.value.length / PAGE_SIZE)));
+const pageEntries = computed(() => displayedList.value.slice((page.value-1)*PAGE_SIZE,page.value*PAGE_SIZE));
+const selectionOptions = { search, sort, authorFilter, universeFilter, importerFilter, typeFilter, povFilter, lengthFilter, tagFilter, favoriteFilter, membershipFilter, statusFilter, sourceFilter, showDiscoveries };
+try {
+  const saved = JSON.parse(localStorage.getItem('catalog-discovery-filters-v1') || '{}');
+  for(const [key,value] of Object.entries(selectionOptions)) {
+    if(typeof saved[key] === typeof value.value) (value as {value: unknown}).value = saved[key];
   }
-  if (addImageTotal.value > 0) {
-    parts.push(`Images: ${addImageCurrent.value} / ${addImageTotal.value}`);
-  }
-  return parts.join(" | ");
+} catch { /* Storage may be disabled or malformed; filters remain usable. */ }
+watch(Object.values(selectionOptions), () => {
+  page.value = 1;
+  try { localStorage.setItem('catalog-discovery-filters-v1', JSON.stringify(Object.fromEntries(Object.entries(selectionOptions).map(([key,value])=>[key,value.value])))); } catch { /* Optional persistence. */ }
 });
+watch(pageCount, count => { page.value = Math.min(page.value,count); });
+function clearFilters() { for(const [key,value] of Object.entries(selectionOptions)) (value as {value: unknown}).value = key === 'sort' ? 'date' : key === 'favoriteFilter' ? 'all' : key === 'showDiscoveries' ? false : ''; }
+function togglePageSelection() {
+ const keys=pageEntries.value.map(entry=>entry.catalogKey), remove=keys.every(key=>selectedCatalogKeySet.value.has(key)), next=new Set(selectedCatalogKeys.value);
+ for(const key of keys) { if(remove)next.delete(key);else next.add(key); } selectedCatalogKeys.value=[...next];
+}
 const selectedCatalogKeySet = computed(() => new Set(selectedCatalogKeys.value));
 const filteredCatalogKeys = computed(() => displayedList.value.map((entry) => entry.catalogKey));
 const filteredSelectedCount = computed(() => filteredCatalogKeys.value.filter((key) => selectedCatalogKeySet.value.has(key)).length);
@@ -210,46 +195,36 @@ const batchStatusText = computed(() => {
 
 onMounted(() => {
   void loadLibrary();
+  void loadAuthorAliases();
   void loadCatalog();
 });
 
-onBeforeUnmount(() => {
-  void clearCatalogDownloadListeners();
-  if (oversizeActionUnlisten) {
-    void oversizeActionUnlisten();
-    oversizeActionUnlisten = null;
-  }
-  resolvePendingOversizePrompt(false);
-});
+onBeforeUnmount(() => { stopBatch.value = true; });
 
-async function loadCatalog() {
-  loading.value = true;
-  error.value = null;
-  successMessage.value = null;
-
+async function loadCatalog(force = false) {
+  if(loading.value) return;
+  loading.value = true; error.value = null;
+  let backgroundRefresh = false;
   try {
-    const zipFallbacks = await loadZipFallbackMap();
-    entries.value = await fetchGoogleSheetCatalogEntries(zipFallbacks);
-    selectedCatalogKeys.value = [];
-  } catch (catalogError) {
-    error.value = catalogError instanceof Error ? catalogError.message : String(catalogError);
-    entries.value = [];
-    selectedCatalogKeys.value = [];
-  } finally {
-    loading.value = false;
-  }
+    const zipFallbacks = await loadZipFallbackMap().catch(() => new Map<string,CatalogEntry>());
+    let result: CatalogSnapshot;
+    try { result = await invoke<CatalogSnapshot>('get_catalog_snapshot',{force}); }
+    catch(e) {
+      if(!/unknown command|command .*not found|unsupported command/i.test(String(e))) throw e;
+      result = {sources:[{id:'beta',name:'Beta Index',rows:await invoke<string[][]>('get_catalog_rows'),fetchedAt:'',stale:false,error:null}],fetchedAt:'',stale:false,warnings:['Legacy catalog backend; persistent snapshots unavailable.']};
+    }
+    snapshot.value = result;
+    entries.value = normalizeCatalogSnapshot(result,zipFallbacks);
+    backgroundRefresh = result.stale && !force;
+  } catch(e) { error.value = String(e); }
+  finally { loading.value = false; }
+  if(backgroundRefresh) void loadCatalog(true);
 }
-
 async function addEntry(entry: CatalogEntry) {
-  if (batchDownloadInProgress.value || !canAddCatalogEntry(entry)) {
-    return;
-  }
-
-  const success = await downloadCatalogEntry(entry, true, getExistingCatalogProjectId(entry));
-  if (success) {
-    removeSelectedCatalogKey(buildCatalogKey(entry));
-  }
+  if(batchDownloadInProgress.value || !canAddCatalogEntry(entry)) return;
+  selectedDownloadEntry.value = entry;
 }
+async function catalogChanged() { await loadLibrary(true); }
 
 async function toggleCatalogFavorite(entry: CatalogListEntry) {
   if (!entry.existingProjectId) {
@@ -264,18 +239,16 @@ async function downloadSelectedEntries() {
     return;
   }
 
-  const queue = displayedList.value.filter((entry) => selectedCatalogKeySet.value.has(entry.catalogKey) && canAddCatalogEntry(entry));
+  const queue = indexedList.value.filter((entry) => selectedCatalogKeySet.value.has(entry.catalogKey) && canAddCatalogEntry(entry));
   if (queue.length === 0) {
     batchDownloadCompleted.value = 0;
     batchDownloadTotal.value = 0;
     batchDownloadFailed.value = 0;
-    batchDownloadMessage.value = "Only ICC and ICC2 catalog entries can be added to the library.";
+    batchDownloadMessage.value = "Selected entries need a playable link before they can be downloaded.";
     return;
   }
 
   batchDownloadInProgress.value = true;
-  batchOversizeAction.value = null;
-  rememberOversizeChoice.value = false;
   batchDownloadCompleted.value = 0;
   batchDownloadTotal.value = queue.length;
   batchDownloadFailed.value = 0;
@@ -287,15 +260,15 @@ async function downloadSelectedEntries() {
   let failed = 0;
 
   try {
+    stopBatch.value = false; failedKeys.value = [];
     for (const entry of queue) {
+      if(stopBatch.value) { batchDownloadMessage.value = "Queue stopped; remaining entries stay selected."; break; }
       batchDownloadMessage.value = `Downloading ${entry.name}`;
-      const success = await downloadCatalogEntry(entry, false, entry.existingProjectId);
+      const success = await downloadCatalogEntry(entry, getExistingCatalogProjectId(entry));
       if (!success) {
-        if (showOversizePrompt.value) {
-          batchDownloadMessage.value = `Batch paused while handling ${entry.name}`;
-          break;
-        }
 
+
+        failedKeys.value.push(entry.catalogKey);
         failed += 1;
         batchDownloadFailed.value = failed;
         batchDownloadMessage.value = `Skipped ${entry.name}`;
@@ -318,168 +291,22 @@ async function downloadSelectedEntries() {
     }
   } finally {
     batchDownloadInProgress.value = false;
-    batchOversizeAction.value = null;
-    rememberOversizeChoice.value = false;
-  }
+      }
 }
 
-async function downloadCatalogEntry(
-  entry: CatalogEntry,
-  showSuccessBanner: boolean,
-  existingProjectId: string | null,
-): Promise<boolean> {
-  if(!isIccEntry(entry)){
-    addingLink.value=buildCatalogKey(entry);error.value=null;addStatus.value="Saving website and linked resources…";addProgress.value=0;
-    try{const {project,unavailable}=await invoke<{project:Project;unavailable:string[]}>("download_website",{url:entry.website,title:entry.name,author:entry.source_author||entry.author||"",fandom:entry.universe||"",description:entry.description||"",maxSizeMb:settings.value.downloadSizeLimitMb,existingProjectId});
-      await loadLibrary(true);if(showSuccessBanner)successMessage.value=`${project.title||project.name} saved. ${unavailable.length ? `${unavailable.length} resources could not be saved. ` : ""}Choose Website (online) for sites requiring live services.`;return true;
-    }catch(e){error.value=String(e);return false;}finally{addingLink.value=null;}
-  }
-  addingLink.value = buildCatalogKey(entry);
-  error.value = null;
-  if (showSuccessBanner) {
-    successMessage.value = null;
-  }
-  addStatus.value = "Preparing import…";
-  addProgress.value = 0;
-  addSizeText.value = "";
-  addImageCurrent.value = 0;
-  addImageTotal.value = 0;
-  const taskId = crypto.randomUUID();
-
-  await clearCatalogDownloadListeners();
-  activeCatalogTaskId = taskId;
-
-  return new Promise<boolean>(async (resolve) => {
-    let settled = false;
-
-    const finish = async (success: boolean, message?: string) => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      addingLink.value = null;
-      activeCatalogTaskId = "";
-      await clearCatalogDownloadListeners();
-
-      if (success) {
-        await loadLibrary(true);
-        const project = projects.value.find(p => p.id === existingProjectId || p.name === entry.name || p.source_url === entry.website);
-        if (project) {
-          await updateProject(project.id, {
-            title: existingProjectId ? project.title : entry.name.split(":").slice(-1)[0].trim(),
-            author: existingProjectId ? project.source_author ?? project.author : entry.source_author || entry.author || project.author,
-            fandom: existingProjectId ? project.fandom : entry.universe || project.fandom,
-            description: existingProjectId ? project.description : entry.description || project.description,
-            is_mod: existingProjectId ? project.is_mod : Boolean(project.is_mod || /\bmod\b/i.test(entry.name)),
-          });
-        }
-        if (showSuccessBanner && message) {
-          successMessage.value = message;
-        }
-      } else if (message) {
-        error.value = message;
-      }
-
-      resolve(success);
-    };
-
-    try {
-      catalogProgressUnlisten = await listen<CatalogProgressPayload>("download-catalog-progress", async (event) => {
-        const payload = event.payload;
-        if (!activeCatalogTaskId || payload.taskId !== activeCatalogTaskId) {
-          return;
-        }
-
-        addStatus.value = payload.message;
-        addSizeText.value = extractMegabyteText(payload.message);
-        addProgress.value = payload.total > 0 ? payload.current / payload.total : 0;
-
-        if (!payload.done) {
-          return;
-        }
-
-        if (payload.success) {
-          await finish(true, payload.message);
-          return;
-        }
-
-        const err = payload.error || "Catalog import failed.";
-        if (parseOversizeError(err)) {
-          const autoAction = getAutoOversizeAction();
-          if (autoAction) {
-            const success = await chooseOversizeOption(autoAction);
-            await finish(success, success ? "Oversize project handling applied." : (error.value || "Oversize action failed."));
-          } else if (batchDownloadInProgress.value) {
-            const success = await waitForBatchOversizeChoice();
-            await finish(success, success ? "Oversize project handling applied." : undefined);
-          } else {
-            rememberOversizeChoice.value = false;
-            showOversizePrompt.value = true;
-            await finish(false);
-          }
-          return;
-        }
-
-        await finish(false, err);
-      });
-
-      imageProgressUnlisten = await listen<DownloadImageProgressPayload>("download-project-progress", (event) => {
-        const payload = event.payload;
-        if (!activeCatalogTaskId || payload.taskId !== activeCatalogTaskId) {
-          return;
-        }
-
-        if (payload.imageTotal > 0) {
-          addImageCurrent.value = payload.imageCurrent;
-          addImageTotal.value = payload.imageTotal;
-        }
-
-        const mb = extractMegabyteText(payload.message);
-        if (mb) {
-          addSizeText.value = mb;
-        }
-
-        if (payload.message) {
-          addStatus.value = payload.message;
-        }
-      });
-
-      const sizeLimitMb = Math.max(10, Math.floor(settings.value.downloadSizeLimitMb || 200));
-      if (existingProjectId) {
-        await startOverwriteCatalogEntry(
-          taskId,
-          existingProjectId,
-          entry.website,
-          entry.link,
-          entry.name,
-          sizeLimitMb,
-        );
-      } else {
-        await startDownloadCatalogEntry(
-          taskId,
-          entry.website,
-          entry.link,
-          entry.name,
-          sizeLimitMb,
-        );
-      }
-    } catch (addError) {
-      await finish(false, addError instanceof Error ? addError.message : String(addError));
-    }
-  });
-}
-
-async function clearCatalogDownloadListeners() {
-  if (catalogProgressUnlisten) {
-    await catalogProgressUnlisten();
-    catalogProgressUnlisten = null;
-  }
-
-  if (imageProgressUnlisten) {
-    await imageProgressUnlisten();
-    imageProgressUnlisten = null;
-  }
+async function downloadCatalogEntry(entry: CatalogEntry, existingProjectId: string | null): Promise<boolean> {
+  addingLink.value = buildCatalogKey(entry); error.value = null; addStatus.value = "Inspecting and downloading…";
+  try {
+    if (existingProjectId) throw new Error("This entry is already in your library. Open Check for updates to review its differences individually.");
+    const plan = await invoke<{mode: string; reason: string}>("inspect_catalog_download", {websiteUrl:entry.website || entry.projectUrls?.[0] || "", zipUrl:null});
+    if (plan.mode !== "project") throw new Error(`${entry.name}: ${plan.reason} Open Download options to choose a website copy, online play or recovery.`);
+    const project = await invoke<Project>("import_catalog_download", {websiteUrl:entry.website || entry.projectUrls?.[0] || "", projectName:entry.name, maxSizeMb:settings.value.downloadSizeLimitMb, archiveUrl:null, allowArchive:false});
+    const patch = catalogMetadataPatch(project, entry);
+    await loadLibrary(true);
+    if (Object.keys(patch).length) { try { await updateProject(project.id, patch); } catch (failure) { error.value = `Downloaded ${entry.name}; optional catalog metadata could not be filled: ${String(failure)}`; } }
+    return true;
+  } catch (failure) { error.value = String(failure); return false; }
+  finally { addingLink.value = null; }
 }
 
 function isCatalogEntrySelected(entryKey: string): boolean {
@@ -519,168 +346,6 @@ async function yieldToUi() {
   await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
-function extractMegabyteText(message: string): string {
-  const match = message.match(/\b\d+(?:\.\d+)?\s*MB\b/i);
-  return match ? match[0].toUpperCase() : "";
-}
-
-function stripMegabyteText(message: string): string {
-  return message.replace(/\s*\(?\b\d+(?:\.\d+)?\s*MB\b\)?/gi, "").replace(/\s{2,}/g, " ");
-}
-
-function parseOversizeError(errorText: string): boolean {
-  // Format: OVERSIZE|<project_id>|<size_bytes>|<limit_bytes>
-  if (!errorText.startsWith("OVERSIZE|")) {
-    return false;
-  }
-
-  const parts = errorText.split("|");
-  if (parts.length < 4) {
-    return false;
-  }
-
-  const projectId = parts[1] || "";
-  const sizeBytes = Number(parts[2]);
-  const limitBytes = Number(parts[3]);
-  if (!projectId || !Number.isFinite(sizeBytes) || !Number.isFinite(limitBytes) || limitBytes <= 0) {
-    return false;
-  }
-
-  oversizeProjectId.value = projectId;
-  oversizeMb.value = Math.round((sizeBytes / (1024 * 1024)) * 10) / 10;
-  oversizeLimitMb.value = Math.round((limitBytes / (1024 * 1024)) * 10) / 10;
-  return true;
-}
-
-async function chooseOversizeOption(strategy: OversizeActionStrategy): Promise<boolean> {
-  if (!oversizeProjectId.value || oversizeActionInProgress.value) {
-    return false;
-  }
-
-  oversizeActionInProgress.value = true;
-  addStatus.value = "Applying post-download action…";
-  addingLink.value = "oversize";
-  error.value = null;
-
-  return new Promise<boolean>(async (resolve) => {
-    try {
-      if (oversizeActionUnlisten) {
-        await oversizeActionUnlisten();
-        oversizeActionUnlisten = null;
-      }
-
-      activeOversizeTaskId = "";
-      let pendingPayload: OversizeActionPayload | null = null;
-
-      let handlePayload: ((payload: OversizeActionPayload) => Promise<void>) | null = null;
-      handlePayload = async (payload: OversizeActionPayload) => {
-        if (!activeOversizeTaskId) {
-          pendingPayload = payload;
-          return;
-        }
-
-        if (payload.taskId !== activeOversizeTaskId) {
-          return;
-        }
-
-        addStatus.value = payload.message;
-        if (!payload.done) {
-          return;
-        }
-
-        oversizeActionInProgress.value = false;
-        addingLink.value = null;
-        activeOversizeTaskId = "";
-        if (oversizeActionUnlisten) {
-          await oversizeActionUnlisten();
-          oversizeActionUnlisten = null;
-        }
-
-        if (payload.success) {
-          await loadLibrary(true);
-          showOversizePrompt.value = false;
-          successMessage.value = "Oversize project handling applied.";
-          resolve(true);
-        } else {
-          error.value = payload.error || "Oversize action failed.";
-          resolve(false);
-        }
-      };
-
-      oversizeActionUnlisten = await listen<OversizeActionPayload>("oversize-action-progress", async (event) => {
-        const payload = event.payload;
-        if (handlePayload) {
-          await handlePayload(payload);
-        }
-      });
-
-      activeOversizeTaskId = await startApplyOversizeProjectAction(oversizeProjectId.value, strategy);
-      if (pendingPayload && handlePayload) {
-        const bufferedPayload = pendingPayload;
-        pendingPayload = null;
-        await handlePayload(bufferedPayload);
-      }
-    } catch (err) {
-      oversizeActionInProgress.value = false;
-      addingLink.value = null;
-      activeOversizeTaskId = "";
-      error.value = String(err);
-      resolve(false);
-    }
-  });
-}
-
-function getAutoOversizeAction(): OversizeActionStrategy | null {
-  const action = batchOversizeAction.value ?? settings.value.oversizeDefaultAction;
-  return action === "ask" ? null : action;
-}
-
-function waitForBatchOversizeChoice(): Promise<boolean> {
-  showOversizePrompt.value = true;
-  rememberOversizeChoice.value = false;
-
-  return new Promise<boolean>((resolve) => {
-    pendingOversizePromptResolver = resolve;
-  });
-}
-
-function resolvePendingOversizePrompt(success: boolean) {
-  if (!pendingOversizePromptResolver) {
-    return;
-  }
-
-  const resolve = pendingOversizePromptResolver;
-  pendingOversizePromptResolver = null;
-  resolve(success);
-}
-
-async function handleOversizePromptChoice(strategy: OversizeActionStrategy) {
-  const success = await chooseOversizeOption(strategy);
-
-  if (!batchDownloadInProgress.value || !pendingOversizePromptResolver) {
-    return;
-  }
-
-  if (success && rememberOversizeChoice.value) {
-    batchOversizeAction.value = strategy;
-  }
-
-  if (success) {
-    rememberOversizeChoice.value = false;
-    resolvePendingOversizePrompt(true);
-  }
-}
-
-function closeOversizePrompt() {
-  if (oversizeActionInProgress.value) {
-    return;
-  }
-
-  showOversizePrompt.value = false;
-  rememberOversizeChoice.value = false;
-  resolvePendingOversizePrompt(false);
-}
-
 async function fetchCatalogEntries(url: string): Promise<CatalogEntry[]> {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -692,7 +357,7 @@ async function fetchCatalogEntries(url: string): Promise<CatalogEntry[]> {
 }
 
 async function loadZipFallbackMap(): Promise<Map<string, CatalogEntry>> {
-  const fallbackEntries = await fetchLocalCatalogEntries(LOCAL_CATALOG_URL);
+  const fallbackEntries = await fetchCatalogEntries(LOCAL_CATALOG_URL);
   const map = new Map<string, CatalogEntry>();
 
   for (const entry of fallbackEntries) {
@@ -704,86 +369,6 @@ async function loadZipFallbackMap(): Promise<Map<string, CatalogEntry>> {
   }
 
   return map;
-}
-
-async function fetchGoogleSheetCatalogEntries(zipFallbacks: Map<string, CatalogEntry>): Promise<CatalogEntry[]> {
-  const values = await invoke<string[][]>("get_catalog_rows");
-  if (!Array.isArray(values) || values.length < 2) {
-    throw new Error("Google Sheets catalog did not contain any rows");
-  }
-
-  return mapGoogleSheetRowsToCatalogEntries(values, zipFallbacks);
-}
-
-async function fetchLocalCatalogEntries(url: string): Promise<CatalogEntry[]> {
-  return fetchCatalogEntries(url);
-}
-
-function mapGoogleSheetRowsToCatalogEntries(rows: string[][], zipFallbacks: Map<string, CatalogEntry>): CatalogEntry[] {
-  const [headerRow, ...dataRows] = rows;
-  const columns = buildGoogleSheetColumnIndex(headerRow);
-  const entries: CatalogEntry[] = [];
-
-  for (const row of dataRows) {
-    const name = readGoogleSheetCell(row, columns, "Title");
-    const website = readGoogleSheetCell(row, columns, "Interactive");
-    if (!name || !website) {
-      continue;
-    }
-
-    const date = readGoogleSheetCell(row, columns, "Updated")
-      || readGoogleSheetCell(row, columns, "Added")
-      || readGoogleSheetCell(row, columns, "Posted");
-    const archiveMatch = zipFallbacks.get(normalizeCatalogWebsite(website));
-
-    entries.push({
-      name,
-      date: date || "",
-      website,
-      link: archiveMatch?.link || "",
-      engine: readGoogleSheetCell(row, columns, "Engine"),
-      author: readGoogleSheetCell(row, columns, "Author"),
-      universe: readGoogleSheetCell(row, columns, "Universe"),
-      importer: readGoogleSheetCell(row, columns, "Importer"),
-      type: readGoogleSheetCell(row, columns, "Type"),
-      pov: readGoogleSheetCell(row, columns, "POV"),
-      length: readGoogleSheetCell(row, columns, "Length"),
-      tags: combineCatalogTags(
-        readGoogleSheetCell(row, columns, "Design Tags"),
-        readGoogleSheetCell(row, columns, "Content Tags"),
-      ),
-      description: readGoogleSheetCell(row, columns, "Description"),
-    });
-  }
-
-  if (entries.length === 0) {
-    throw new Error("Google Sheets catalog did not contain any usable entries");
-  }
-
-  return entries;
-}
-
-function buildGoogleSheetColumnIndex(headerRow: string[]): Map<string, number> {
-  return new Map(headerRow.map((header, index) => [header.trim(), index]));
-}
-
-function readGoogleSheetCell(row: string[], columns: Map<string, number>, columnName: string): string {
-  const index = columns.get(columnName);
-  if (index === undefined) {
-    return "";
-  }
-
-  return (row[index] || "").trim();
-}
-
-function normalizeCatalogWebsite(website: string): string {
-  try {
-    const url = new URL(website.trim());
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return website.trim();
-  }
 }
 
 function normalizeLibrarySourceUrl(raw: string): string {
@@ -798,13 +383,13 @@ function normalizeLibrarySourceUrl(raw: string): string {
       return "";
     }
 
-    url.hash = "";
+
     const segments = url.pathname.split("/").filter(Boolean);
     const lastSegment = segments[segments.length - 1]?.toLowerCase() || "";
 
-    if (lastSegment.endsWith(".json")) {
+    if (lastSegment === "project.json") {
       segments.pop();
-      url.pathname = segments.length > 0 ? `/${segments.join("/")}` : "/";
+      url.pathname = segments.length > 0 ? `/${segments.join("/")}/` : "/";
     } else if (!url.pathname) {
       url.pathname = "/";
     }
@@ -815,76 +400,13 @@ function normalizeLibrarySourceUrl(raw: string): string {
   }
 }
 
-function compareCatalogDates(left: string, right: string): number {
-  return left.localeCompare(right);
-}
+function compareCatalogDates(left:string,right:string):number{return left.localeCompare(right);}
+function normalizeCatalogWebsite(website:string):string{return catalogUrl(website);}
+function canAddCatalogEntry(entry: CatalogEntry): boolean {return Boolean(catalogUrl(entry.website) || entry.projectUrls?.length || entry.recoveryUrls?.length);}
 
-type CatalogSearchToken = {
-  value: string;
-  excluded: boolean;
-};
-
-function parseCatalogSearchTokens(raw: string): CatalogSearchToken[] {
-  return raw
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const excluded = part.startsWith("-");
-      const value = excluded ? part.slice(1).trim() : part;
-      return {
-        value,
-        excluded,
-      };
-    })
-    .filter((token) => token.value.length > 0);
-}
-
-function buildCatalogSearchHaystack(entry: CatalogListEntry): string[] {
-  return [
-    entry.name,
-    entry.website,
-    entry.date,
-    entry.author,
-    entry.source_author,
-    entry.universe,
-    entry.importer,
-    entry.type,
-    entry.pov,
-    entry.length,
-    entry.description,
-    entry.hostLabel,
-    ...(entry.tags || []),
-  ]
-    .filter((value): value is string => Boolean(value))
-    .map((value) => value.toLowerCase());
-}
-
-function matchesCatalogSearch(entry: CatalogListEntry, tokens: CatalogSearchToken[]): boolean {
-  const haystack = buildCatalogSearchHaystack(entry);
-
-  return tokens.every((token) => {
-    const matched = haystack.some((value) => value.includes(token.value));
-    return token.excluded ? !matched : matched;
-  });
-}
-
-function normalizeCatalogEngine(engine: unknown): string {
-  if (typeof engine !== "string") {
-    return "";
-  }
-
-  return engine.trim().toUpperCase();
-}
-
-function isIccEntry(entry:CatalogEntry):boolean{return ["ICC","ICC2"].includes(normalizeCatalogEngine(entry.engine));}
-function canAddCatalogEntry(entry: CatalogEntry): boolean {try{return ["http:","https:"].includes(new URL(entry.website).protocol);}catch{return false;}}
-function combineCatalogTags(...groups:string[]):string[]{return normalizeTags(groups);}
 
 function buildCatalogKey(entry: CatalogEntry): string {
-  return `${entry.website}::${entry.name}`;
+  return catalogKey(entry);
 }
 
 function buildOptionList(values: Array<string | undefined>): string[] {
@@ -948,7 +470,7 @@ async function openCatalogWebsite(entry: CatalogEntry) {
 }
 
 function getExistingCatalogProjectId(entry: CatalogEntry): string | null {
-  return existingCatalogProjectByWebsite.value.get(normalizeLibrarySourceUrl(entry.website))?.id || null;
+  return preferredLibraryProject(matchingLibraryProjects(entry))?.id || null;
 }
 
 function extractHostLabel(website: string): string | null {
@@ -982,21 +504,16 @@ function getTypeBadgeClass(type: string | undefined): string {
         class="search"
         type="text"
         placeholder="Search catalog"
-        :title="search ? `${search} — use -word to exclude matches` : 'Search title, author, fandom or tags; use -word to exclude matches'"
+        :title="'Search aliases, titles and metadata. Use &quot;quoted phrases&quot;, -word to exclude matches, author:, fandom:, tag: or title:.'"
         aria-label="Search catalog"
       />
 
       <select v-model="sort" class="filter-select" title="Sort">
-        <option value="date">Newest first</option>
+        <option value="date">Catalog date: newest first</option>
         <option value="name">Name A-Z</option>
       </select>
 
-      <div>
-        Catalog entries come from
-        <b><a class="source-link" href="https://docs.google.com/spreadsheets/d/1jxBbWB08myhD8YXePPifsWQG3JH2qZtBs9Y5yYcqE7g" target="_blank" rel="noreferrer">Google Sheets</a></b>
-        with <b><a class="source-link" href="https://infaera.neocities.org/ZipArchive/" target="_blank" rel="noreferrer">ZIP archive</a></b> fallback if available.
-      </div>
-
+      <span class="sync-status" role="status">{{ snapshot?.fetchedAt ? `Last sync: ${new Date(snapshot.fetchedAt).toLocaleString()}` : 'Catalog sources' }}{{ snapshot?.stale ? ' · Cached / stale' : '' }}</span>
       <div class="toolbar-spacer" />
 
       <div class="toolbar-actions">
@@ -1008,9 +525,11 @@ function getTypeBadgeClass(type: string | undefined): string {
             @click.stop
             @change="handleSelectAllFiltered"
           />
-          <span>Select all filtered</span>
+          <span>Select all {{ displayedList.length }} results</span>
         </label>
 
+        <button class="btn-secondary" @click="togglePageSelection" :disabled="batchDownloadInProgress">Select / clear page</button>
+        <button v-if="selectedCatalogKeys.length" class="btn-secondary" @click="selectedCatalogKeys = []" :disabled="batchDownloadInProgress">Clear selection</button>
         <div v-if="hasSelectedEntries || batchStatusVisible" class="batch-download-group">
           <button
             class="btn-primary"
@@ -1019,20 +538,23 @@ function getTypeBadgeClass(type: string | undefined): string {
           >
             {{ batchDownloadInProgress ? "Downloading…" : `Download Selected (${selectedCatalogKeys.length})` }}
           </button>
+          <button v-if="batchDownloadInProgress" class="btn-secondary" @click="stopBatch = true">Stop after current</button>
+          <button v-if="failedKeys.length && !batchDownloadInProgress" class="btn-secondary" @click="selectedCatalogKeys = [...failedKeys]; downloadSelectedEntries()">Retry failed</button>
           <div v-if="batchStatusVisible" class="batch-download-status">
             <div>{{ batchStatusText }}</div>
             <div v-if="batchDownloadMessage">{{ batchDownloadMessage }}</div>
           </div>
         </div>
 
-        <button class="btn-secondary" :disabled="loading || batchDownloadInProgress" @click="loadCatalog">
+        <button class="btn-secondary" :disabled="loading || batchDownloadInProgress" @click="loadCatalog(true)">
           {{ loading ? "Loading…" : "Reload Catalog" }}
         </button>
       </div>
     </div>
 
     <div class="filter-row">
-      <select v-model="favoriteFilter" style="max-width: 100px;" class="filter-select">
+      <select v-model="membershipFilter" class="filter-select" aria-label="Library membership"><option value="">All library states</option><option value="library">In library</option><option value="missing">Not in library</option></select>
+      <select v-model="favoriteFilter" style="max-width: 100px;" class="filter-select" aria-label="Filter by favorites">
         <option value="all">All ♥♡ </option>
         <option value="favorites">Only Favorites ♥</option>
       </select>
@@ -1042,36 +564,43 @@ function getTypeBadgeClass(type: string | undefined): string {
         <option v-for="option in authorOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <select v-model="universeFilter" class="filter-select">
+      <select v-model="universeFilter" class="filter-select" aria-label="Filter by universe">
         <option value="">All universes</option>
         <option v-for="option in universeOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <select v-model="importerFilter" class="filter-select">
+      <button class="btn-secondary" @click="advancedFilters = !advancedFilters" :aria-expanded="advancedFilters">More filters</button>
+      <button class="btn-secondary" @click="clearFilters">Clear filters</button>
+      <div v-if="advancedFilters" class="advanced-filters">
+      <select v-model="importerFilter" class="filter-select" aria-label="Filter by importer">
         <option value="">All importers</option>
         <option v-for="option in importerOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <select v-model="typeFilter" class="filter-select">
+      <select v-model="typeFilter" class="filter-select" aria-label="Filter by type">
         <option value="">All types</option>
         <option v-for="option in typeOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <select v-model="povFilter" class="filter-select">
+      <select v-model="povFilter" class="filter-select" aria-label="Filter by point of view">
         <option value="">All PoV</option>
         <option v-for="option in povOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <select v-model="lengthFilter" style="max-width: 100px;" class="filter-select">
+      <select v-model="lengthFilter" style="max-width: 100px;" class="filter-select" aria-label="Filter by length">
         <option value="">All lengths</option>
         <option v-for="option in lengthOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <select v-model="tagFilter" style="max-width: 100px;" class="filter-select">
+      <select v-model="tagFilter" style="max-width: 100px;" class="filter-select" aria-label="Filter by tag">
         <option value="">All tags</option>
         <option v-for="option in tagOptions" :key="option" :value="option">{{ option }}</option>
       </select>
 
+      <select v-model="statusFilter" class="filter-select" aria-label="Catalog status"><option value="">All catalog statuses</option><option v-for="option in statusOptions" :key="option">{{ option }}</option></select>
+      <select v-model="sourceFilter" class="filter-select" aria-label="Catalog source"><option value="">All sources</option><option value="beta">Beta Index</option><option value="projects">Project links</option><option value="broken">Broken links / recovery</option><option value="discoveries">Unreviewed discoveries</option></select>
+      <label><input v-model="showDiscoveries" type="checkbox" /> Include unreviewed discoveries</label>
+      </div>
       <div class="status-bar">
         <span>{{ displayedList.length }} / {{ entries.length }} entries</span>
       </div>
@@ -1079,6 +608,8 @@ function getTypeBadgeClass(type: string | undefined): string {
 
 
 
+    <details v-if="snapshot" class="source-health"><summary>Source freshness</summary><div v-for="source in snapshot.sources" :key="source.id">{{ source.name }}: {{ source.stale ? "Cached / stale" : "Current snapshot" }} · {{ source.fetchedAt || "Never fetched" }}<span v-if="source.error"> · {{ source.error }}</span></div></details>
+    <div v-if="snapshot?.warnings.length" class="banner">{{ snapshot.warnings.join(" · ") }}</div>
     <div v-if="successMessage" class="banner success">{{ successMessage }}</div>
     <div v-if="error" class="banner error">{{ error }}</div>
 
@@ -1087,7 +618,7 @@ function getTypeBadgeClass(type: string | undefined): string {
 
     <div v-else class="grid">
       <article
-        v-for="entry in displayedList"
+        v-for="entry in pageEntries"
         :key="entry.catalogKey"
         class="card"
         :class="{ selected: isCatalogEntrySelected(entry.catalogKey) }"
@@ -1098,7 +629,8 @@ function getTypeBadgeClass(type: string | undefined): string {
           <div class="card-head">
               <input
                 type="checkbox"
-                v-if="isCatalogEntrySelected(entry.catalogKey)"
+                :aria-label="`Select ${entry.name}`"
+                @click.stop
                 :checked="isCatalogEntrySelected(entry.catalogKey)"
                 :disabled="batchDownloadInProgress"
                 @change="toggleCatalogEntrySelection(entry.catalogKey)"
@@ -1113,6 +645,7 @@ function getTypeBadgeClass(type: string | undefined): string {
               <div class="byline">
                 <span v-if="entry.universe">{{ entry.universe }}</span>
                 <span v-if="entry.hostLabel">{{ entry.hostLabel }}</span>
+                <span v-if="entry.existingProjectCount > 1">{{ entry.existingProjectCount }} library editions — choose one in Download options</span>
                 <span v-if="entry.importer">Imported by {{ entry.importer }}</span>
                 <span v-if="entry.length">{{ entry.length }}</span>
               </div>
@@ -1120,6 +653,9 @@ function getTypeBadgeClass(type: string | undefined): string {
             <div class="badge badge-date">{{ entry.date }}</div>
           </div>
 
+          <div class="entry-status">{{ entry.sourceId === "discoveries" ? "Unreviewed discovery · " : "" }}{{ entry.availability }}<span v-if="entry.status"> · Catalog: {{ entry.status }}</span><span v-if="entry.version"> · {{ entry.version }}</span></div>
+          <p v-if="entry.warnings" class="entry-warning">{{ entry.warnings }}</p>
+          <details v-if="entry.aliases?.length || entry.alternateUrls?.length || entry.projectUrls?.length || entry.recoveryUrls?.length || entry.staticUrls?.length || entry.comments" @click.stop><summary>Source details and links</summary><div v-if="entry.aliases?.length">Also known as: {{ entry.aliases.join("; ") }}</div><div>Added: {{ entry.added || "Unknown" }} · Posted: {{ entry.posted || "Unknown" }} · Updated: {{ entry.updated || "Unknown" }}</div><div v-for="group in [{label: 'Alternate',urls:entry.alternateUrls},{label:'Project',urls:entry.projectUrls},{label:'Archived recovery (age unverified)',urls:entry.recoveryUrls},{label:'Static',urls:entry.staticUrls}]" :key="group.label"><button v-for="url in group.urls" :key="url" class="source-link source-detail-link" @click="openUrl(url)">{{ group.label }}: {{ url }}</button></div><p v-if="entry.comments">{{ entry.comments }}</p><div>Source: {{ entry.provenance?.join(" · ") }}</div></details>
           <p v-if="entry.description" class="description">{{ entry.description }}</p>
 
           <div v-if="entry.tags?.length" class="tag-list">
@@ -1127,21 +663,17 @@ function getTypeBadgeClass(type: string | undefined): string {
             <span v-if="entry.pov?.trim()" class="tag-chip">PoV: {{ entry.pov }}</span>
           </div>
 
-          <ProgressBar
-            v-if="addingLink === entry.catalogKey"
-            :label="addProgressLabel"
-            :value="addProgress * 100"
-            :details="addProgressSubtext"
-          />
+          <p v-if="addingLink === entry.catalogKey" role="status">{{ addStatus }}</p>
 
           <div class="actions">
-            <button class="btn-secondary action-link" @click.stop="openCatalogWebsite(entry)">
+            <button class="btn-secondary action-link" :disabled="!entry.website" @click.stop="openCatalogWebsite(entry)">
               Open Site
             </button>
-            <button class="btn-secondary" @click.stop="copyWebsiteLink(entry)">Copy Link</button>
+            <button class="btn-secondary" :disabled="!entry.website" @click.stop="copyWebsiteLink(entry)">Copy Link</button>
             <button
               v-if="entry.existingProjectId"
               class="favorite-action-btn"
+              :disabled="entry.existingProjectCount > 1"
               :class="{ active: entry.existingProjectFavorite }"
               :title="entry.existingProjectFavorite ? 'Remove favorite' : 'Add favorite'"
               @click.stop="toggleCatalogFavorite(entry)"
@@ -1149,41 +681,20 @@ function getTypeBadgeClass(type: string | undefined): string {
               {{ entry.existingProjectFavorite ? "♥" : "♡" }}
             </button>
             <button
-              :class="entry.existingProjectId ? 'btn-overwrite' : 'btn-primary'"
+              :class="'btn-primary'"
               :disabled="addingLink !== null || batchDownloadInProgress || !canAddCatalogEntry(entry)"
               :title="canAddCatalogEntry(entry) ? undefined : 'A valid website link is required'"
               @click.stop="addEntry(entry)"
             >
-              {{ addingLink === entry.catalogKey ? (entry.existingProjectId ? "Overwriting…" : "Adding…") : (entry.existingProjectId ? "Overwrite" : isIccEntry(entry) ? "Add to Library" : canAddCatalogEntry(entry) ? "Save website" : "No website") }}
+              {{ addingLink === entry.catalogKey ? "Working…" : entry.existingProjectId ? "Check for updates" : canAddCatalogEntry(entry) ? "Download options" : "No download link" }}
             </button>
           </div>
         </div>
       </article>
     </div>
 
-    <div
-      v-if="showOversizePrompt"
-      class="confirm-overlay"
-      @click.self="closeOversizePrompt"
-    >
-      <div class="confirm-dialog">
-        <OversizeActionPrompt
-          :final-size-mb="oversizeMb"
-          :limit-mb="oversizeLimitMb"
-          :busy="oversizeActionInProgress"
-          :status="addStatus"
-          @choose="handleOversizePromptChoice"
-        />
-        <label v-if="batchDownloadInProgress" class="oversize-remember-choice">
-          <input
-            v-model="rememberOversizeChoice"
-            type="checkbox"
-            :disabled="oversizeActionInProgress"
-          />
-          <span>Don't ask again</span>
-        </label>
-      </div>
-    </div>
+    <nav class="pagination" aria-label="Catalog pages"><button class="btn-secondary" :disabled="page <= 1" @click="page--">Previous</button><span>Page {{ page }} / {{ pageCount }} · {{ displayedList.length }} results · {{ selectedCatalogKeys.length }} selected across pages</span><button class="btn-secondary" :disabled="page >= pageCount" @click="page++">Next</button></nav>
+    <CatalogDownloadDialog v-if="selectedDownloadEntry" :entry="selectedDownloadEntry" :existing-project="selectedDownloadProject" :existing-projects="selectedDownloadProjects" @close="selectedDownloadEntry = null" @changed="catalogChanged" />
   </div>
 </template>
 
@@ -1292,6 +803,7 @@ function getTypeBadgeClass(type: string | undefined): string {
 }
 
 .toolbar-actions {
+  flex-wrap: wrap;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1306,7 +818,7 @@ function getTypeBadgeClass(type: string | undefined): string {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel-bg);
-  color: var(--text-muted);
+  color: var(--muted);
 }
 
 .batch-download-group {
@@ -1318,7 +830,7 @@ function getTypeBadgeClass(type: string | undefined): string {
 .batch-download-status {
   font-size: 0.78rem;
   line-height: 1.35;
-  color: var(--text-muted);
+  color: var(--muted);
 }
 
 .filter-row {
@@ -1354,10 +866,16 @@ function getTypeBadgeClass(type: string | undefined): string {
   color: var(--danger);
 }
 
+.source-health { padding:8px 20px; font-size:.8rem; color:var(--muted); }
+.advanced-filters { display:flex; flex-wrap:wrap; gap:10px; width:100%; align-items:center; }
+.sync-status,.entry-status { font-size:.8rem; color:var(--muted); }
+.source-detail-link { display:block; overflow-wrap:anywhere; text-align:left; background:none; border:0; padding:4px 0; }
+.entry-warning { color:var(--danger); margin:0; }
+.pagination { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:12px; padding:16px; }
 .grid {
   padding: 20px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr));
   gap: 16px;
   align-content: start;
 }
@@ -1446,7 +964,7 @@ function getTypeBadgeClass(type: string | undefined): string {
   align-items: center;
   gap: 6px;
   font-size: 0.78rem;
-  color: var(--text-muted);
+  color: var(--muted);
   flex-shrink: 0;
 }
 

@@ -31,8 +31,8 @@ Tauri's bundle targets are Linux AppImage, DEB and RPM. The tested local deliver
 ## Tests
 
 ```bash
-pnpm test:rust
 pnpm build
+pnpm test:rust
 pnpm exec playwright install chromium
 pnpm test:ui
 ```

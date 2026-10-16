@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -489,7 +489,7 @@ fn run_download_catalog_entry(
     app: &tauri::AppHandle,
     task_id: &str,
     website_url: String,
-    zip_url: String,
+    _zip_url: String,
     project_name: String,
     max_project_size_mb: u64,
 ) -> Result<(), String> {
@@ -516,30 +516,7 @@ fn run_download_catalog_entry(
         desired_name,
     ) {
         Ok(result) => result,
-        Err(error) => {
-            emit_catalog_import_progress(
-                app.clone(),
-                CatalogImportProgress {
-                    task_id: task_id.to_string(),
-                    phase: "fallback-archive".to_string(),
-                    current: 20,
-                    total: 100,
-                    message: format!("Website link failed, falling back to ZIP: {}", error),
-                    done: false,
-                    success: false,
-                    error: None,
-                },
-            );
-
-            (
-                download_catalog_project_zip(
-                    zip_url.trim(),
-                    desired_name,
-                    Some((app, task_id)),
-                )?,
-                normalize_source_url(&website_url),
-            )
-        }
+        Err(error) => return Err(format!("Website download failed: {error}. No archive was substituted. Use explicit archive recovery to import an uncertain older edition as a separate card.")),
     };
 
     emit_catalog_import_progress(
@@ -590,7 +567,7 @@ fn run_overwrite_catalog_entry(
     task_id: &str,
     project_id: &str,
     website_url: String,
-    zip_url: String,
+    _zip_url: String,
     project_name: String,
     max_project_size_mb: u64,
     force_update: bool,
@@ -626,30 +603,7 @@ fn run_overwrite_catalog_entry(
         None,
     ) {
         Ok(result) => result,
-        Err(error) => {
-            emit_catalog_import_progress(
-                app.clone(),
-                CatalogImportProgress {
-                    task_id: task_id.to_string(),
-                    phase: "fallback-archive".to_string(),
-                    current: 20,
-                    total: 100,
-                    message: format!("Website link failed, falling back to ZIP: {}", error),
-                    done: false,
-                    success: false,
-                    error: None,
-                },
-            );
-
-            (
-                download_catalog_project_zip(
-                    zip_url.trim(),
-                    desired_name,
-                    Some((app, task_id)),
-                )?,
-                normalize_source_url(&website_url),
-            )
-        }
+        Err(error) => return Err(format!("Website download failed: {error}. No archive was substituted. Use explicit archive recovery to import an uncertain older edition as a separate card.")),
     };
 
     emit_catalog_import_progress(
@@ -713,6 +667,13 @@ fn run_overwrite_catalog_entry(
     );
 
     Ok(())
+}
+
+/// Prepare in a caller-owned isolated staging directory; never touch library storage.
+pub(crate) fn prepare_catalog_candidate(path: &Path, base_url: &tauri::Url, root: &Path) -> Result<PathBuf, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let processed = process_downloaded_project_images_silent(&bytes, base_url)?;
+    save_processed_downloaded_project(root, base_url, None, processed)
 }
 
 fn download_catalog_website_project(
@@ -1532,238 +1493,6 @@ fn set_project_viewer_preference_after_import(
     Ok(updated)
 }
 
-fn download_catalog_project_zip(
-    zip_url: &str,
-    project_name: &str,
-    progress: Option<(&tauri::AppHandle, &str)>,
-) -> Result<PathBuf, String> {
-    if zip_url.is_empty() {
-        return Err("Missing ZIP URL".to_string());
-    }
-
-    let response = reqwest::blocking::get(zip_url)
-        .map_err(|e| format!("Download failed: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("Download failed: {}", e))?;
-    let bytes = read_response_with_progress(response, |downloaded, total| {
-        if let Some((app, task_id)) = progress {
-            let (current, total_units) = match total {
-                Some(t) if t > 0 => (
-                    usize::try_from(downloaded.min(t)).unwrap_or(usize::MAX),
-                    usize::try_from(t).unwrap_or(usize::MAX),
-                ),
-                _ => {
-                    let fallback_total = downloaded.saturating_add(1);
-                    (
-                        usize::try_from(downloaded).unwrap_or(usize::MAX),
-                        usize::try_from(fallback_total).unwrap_or(usize::MAX),
-                    )
-                }
-            };
-
-            let message = match total {
-                Some(t) if t > 0 => format!(
-                    "Downloading ZIP: {} / {}",
-                    format_bytes_megabytes(downloaded),
-                    format_bytes_megabytes(t),
-                ),
-                _ => format!("Downloading ZIP: {}", format_bytes_megabytes(downloaded)),
-            };
-
-            emit_catalog_import_progress(
-                app.clone(),
-                CatalogImportProgress {
-                    task_id: task_id.to_string(),
-                    phase: "downloading-archive".to_string(),
-                    current,
-                    total: total_units,
-                    message,
-                    done: false,
-                    success: false,
-                    error: None,
-                },
-            );
-        }
-    })
-    .map_err(|e| format!("Failed to read ZIP archive: {}", e))?;
-
-    if let Some((app, task_id)) = progress {
-        emit_catalog_import_progress(
-            app.clone(),
-            CatalogImportProgress {
-                task_id: task_id.to_string(),
-                phase: "extracting-archive".to_string(),
-                current: 25,
-                total: 100,
-                message: format!(
-                    "Extracting {} ({})",
-                    project_name,
-                    format_bytes_megabytes(bytes.len() as u64)
-                ),
-                done: false,
-                success: false,
-                error: None,
-            },
-        );
-    }
-
-    let archive_name = if slugify(project_name).is_empty() {
-        "downloaded-cyoa".to_string()
-    } else {
-        slugify(project_name)
-    };
-
-    let extraction_root = unique_dir_path(cyoas_dir().join(&archive_name));
-    std::fs::create_dir_all(&extraction_root)
-        .map_err(|e| format!("Failed to create extraction folder: {}", e))?;
-
-    if let Err(error) = extract_catalog_zip(&bytes, &extraction_root, progress) {
-        let _ = std::fs::remove_dir_all(&extraction_root);
-        return Err(error);
-    }
-
-    if let Some((app, task_id)) = progress {
-        emit_catalog_import_progress(
-            app.clone(),
-            CatalogImportProgress {
-                task_id: task_id.to_string(),
-                phase: "scanning-archive".to_string(),
-                current: 75,
-                total: 100,
-                message: format!("Finding project JSON for {}", project_name),
-                done: false,
-                success: false,
-                error: None,
-            },
-        );
-    }
-
-    let Some(project_path) = find_best_project_json_path(&extraction_root) else {
-        let _ = std::fs::remove_dir_all(&extraction_root);
-        return Err("No usable project JSON file was found in the ZIP archive".to_string());
-    };
-
-    Ok(project_path)
-}
-
-fn extract_catalog_zip(
-    bytes: &[u8],
-    destination: &Path,
-    progress: Option<(&tauri::AppHandle, &str)>,
-) -> Result<(), String> {
-    let cursor = Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| format!("Downloaded file is not a valid ZIP archive: {}", e))?;
-    let total_entries = archive.len().max(1);
-
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
-        let Some(relative_path) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
-            continue;
-        };
-
-        let output_path = destination.join(relative_path);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&output_path)
-                .map_err(|e| format!("Failed to create extracted folder: {}", e))?;
-        } else {
-            if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create extracted folder: {}", e))?;
-            }
-
-            let mut file = std::fs::File::create(&output_path)
-                .map_err(|e| format!("Failed to create extracted file: {}", e))?;
-            std::io::copy(&mut entry, &mut file)
-                .map_err(|e| format!("Failed to extract ZIP entry: {}", e))?;
-            file.flush()
-                .map_err(|e| format!("Failed to finalize extracted file: {}", e))?;
-        }
-
-        if let Some((app, task_id)) = progress {
-            let percent = 25 + ((index + 1) * 50 / total_entries);
-            emit_catalog_import_progress(
-                app.clone(),
-                CatalogImportProgress {
-                    task_id: task_id.to_string(),
-                    phase: "extracting-archive".to_string(),
-                    current: percent,
-                    total: 100,
-                    message: format!("Extracting archive files {}/{}", index + 1, total_entries),
-                    done: false,
-                    success: false,
-                    error: None,
-                },
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn find_best_project_json_path(root: &Path) -> Option<PathBuf> {
-    use walkdir::WalkDir;
-
-    let mut candidates = Vec::new();
-
-    for entry in WalkDir::new(root).into_iter().filter_map(|entry| entry.ok()) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-
-        let Ok(content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        let score = score_project_json_candidate(path, &json);
-        if score > 0 {
-            candidates.push((score, path.to_path_buf()));
-        }
-    }
-
-    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-    candidates.into_iter().next().map(|(_, path)| path)
-}
-
-fn score_project_json_candidate(path: &Path, json: &serde_json::Value) -> i32 {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return 0;
-    };
-
-    let lower_name = file_name.to_ascii_lowercase();
-    let mut score = 0;
-
-    if lower_name == "project.json" {
-        score += 100;
-    }
-    if lower_name.contains("project") {
-        score += 40;
-    }
-    if json.get("rows").and_then(|value| value.as_array()).is_some() {
-        score += 40;
-    }
-    if json.get("styling").map(|value| value.is_object()).unwrap_or(false) {
-        score += 25;
-    }
-    if extract_project_name(json).is_some() {
-        score += 15;
-    }
-    if extract_first_row_title(json).is_some() {
-        score += 10;
-    }
-
-    score
-}
-
 fn build_default_project_json_url(url: &tauri::Url) -> tauri::Url {
     let mut project_url = url.clone();
     project_url.set_query(None);
@@ -2358,11 +2087,18 @@ fn detect_default_viewer_preference(json: &serde_json::Value) -> Option<String> 
     }
 }
 
-fn add_project_from_path(
+pub(crate) fn add_project_from_path(
     file_path: String,
     state: &State<LibraryState>,
     source_url: Option<String>,
     project_json_url: Option<String>,
+) -> Result<Project, String> {
+    add_catalog_project_configured(file_path, state, source_url, project_json_url, |_| {})
+}
+
+pub(crate) fn add_catalog_project_configured(
+    file_path: String, state: &State<LibraryState>, source_url: Option<String>, project_json_url: Option<String>,
+    configure: impl FnOnce(&mut Project),
 ) -> Result<Project, String> {
     let path = Path::new(&file_path);
     if !path.exists() {
@@ -2382,7 +2118,7 @@ fn add_project_from_path(
     )?;
     let viewer_preference = detect_default_viewer_preference(&json);
 
-    let project = Project {
+    let mut project = Project {
         metadata: crate::metadata::infer(&json, &name),
         build_count: 0,
         id: Uuid::new_v4().to_string(),
@@ -2400,9 +2136,9 @@ fn add_project_from_path(
         file_missing: false,
     };
 
-    insert_library_project(&project)?;
-
+    configure(&mut project);
     let mut lib = state.lock().map_err(|e| e.to_string())?;
+    insert_library_project(&project)?;
     lib.projects.push(project.clone());
     if let Err(error) = sync_index_for_project_if_present(&project) {
         eprintln!("Failed to update perk index after add: {}", error);
@@ -2410,13 +2146,21 @@ fn add_project_from_path(
     Ok(project)
 }
 
-fn replace_project_from_path(
+pub(crate) fn replace_project_from_path(
     project_id: &str,
     file_path: String,
     state: &State<LibraryState>,
     source_url: Option<String>,
     project_json_url: Option<String>,
     desired_name: &str,
+) -> Result<Project, String> {
+    replace_project_checked(project_id, file_path, state, source_url, project_json_url, desired_name, None)
+}
+
+pub(crate) fn replace_project_checked(
+    project_id: &str, file_path: String, state: &State<LibraryState>,
+    source_url: Option<String>, project_json_url: Option<String>, desired_name: &str,
+    expected: Option<(&Project, &str)>,
 ) -> Result<Project, String> {
     let path = Path::new(&file_path);
     if !path.exists() {
@@ -2443,6 +2187,12 @@ fn replace_project_from_path(
         .position(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {}", project_id))?;
 
+    if let Some((previous, fingerprint)) = expected {
+        if serde_json::to_vec(&lib.projects[index]).map_err(|e| e.to_string())? != serde_json::to_vec(previous).map_err(|e| e.to_string())?
+            || crate::catalog_download::edition_digest(Path::new(&previous.file_path))? != fingerprint {
+            return Err("The library edition changed after preview. Inspect the update again.".into());
+        }
+    }
     let mut updated = lib.projects[index].clone();
     updated.name = if desired_name.trim().is_empty() {
         derived_name
@@ -3039,26 +2789,39 @@ pub fn open_viewer_window(
     project_name: String,
     cheats_enabled: bool,
     version_id: Option<String>,
+    allow_incompatible: Option<bool>,
     sessions: State<SessionStore>,
 ) -> Result<(), String> {
     let (reader_width,reader_height)=reader_window_size(&app);
     let is_website=viewer_id=="website";
     let label = format!("{}-{}", if viewer_id.starts_with("website"){"website"}else{"viewer"}, &Uuid::new_v4().to_string()[..8]);
 
-    let (file_path, font_preference) = if let Some(version_id) = version_id {
+    let (file_path, font_preference, source_url) = if let Some(version_id) = version_id {
         let project=crate::history::versions_for(&project_id)?.into_iter().find(|v|v.id==version_id)
             .ok_or("Archived version not found")?.project;
-        (project.file_path, project.metadata.font_preference)
+        (project.file_path, project.metadata.font_preference, project.source_url)
     } else {
         let library = app.state::<LibraryState>();
         let lib = library.lock().map_err(|e| e.to_string())?;
         let project=lib.projects.iter().find(|p| p.id == project_id)
             .ok_or_else(|| "Project not found".to_string())?;
-        (project.file_path.clone(), project.metadata.font_preference.clone())
+        (project.file_path.clone(), project.metadata.font_preference.clone(), project.source_url.clone())
     };
     if viewer_id=="website-live" {
         let source=if Path::new(&file_path).parent().and_then(Path::parent).is_some_and(|p|p.join("files.zip").is_file()){crate::archive_storage::with_files(Path::new(&file_path),||Ok(crate::websites::read(Path::new(&file_path))?.url))?}else{crate::websites::read(Path::new(&file_path))?.url};let url=tauri::Url::parse(&source).map_err(|e|e.to_string())?;
         let app=app.clone();std::thread::spawn(move||{let _=tauri::WebviewWindowBuilder::new(&app,&label,tauri::WebviewUrl::External(url)).title(&project_name).inner_size(reader_width,reader_height).maximized(false).fullscreen(false).background_color(crate::preferences::background_color(&crate::preferences::load().theme)).build();});return Ok(());
+    }
+    if ["icc2-plus", "icc-plus", "icc-original"].contains(&viewer_id.as_str()) && !allow_incompatible.unwrap_or(false) {
+        let inspect = || {
+            let file = std::fs::File::open(&file_path).map_err(|e|e.to_string())?;
+            crate::compatibility::inspect(std::io::BufReader::new(file))
+        };
+        let report = if Path::new(&file_path).parent().and_then(Path::parent).is_some_and(|p|p.join("files.zip").is_file()) {
+            crate::archive_storage::with_files(Path::new(&file_path), inspect)?
+        } else { inspect()? };
+        if report.needs_native_viewer() {
+            return Err(format!("VIEWER_COMPATIBILITY|{}", serde_json::json!({"report":report,"sourceUrl":source_url})));
+        }
     }
     // Register the archive reader while holding the same lock used by cache retirement.
     let mut session_store = sessions.lock().map_err(|e|e.to_string())?;

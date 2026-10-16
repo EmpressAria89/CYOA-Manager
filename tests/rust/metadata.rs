@@ -17,5 +17,15 @@ mod tests {
         p.metadata.fandom.clear();fill_missing(&mut p,&serde_json::json!({"metadata":{"fandom":"Updated source universe"}}));assert_eq!(p.metadata.fandom,"Updated source universe");
         p.name="Writer: Unknown".into();p.metadata.title="Custom display title".into();p.metadata.author.clear();fill_missing(&mut p,&serde_json::json!({}));assert_eq!(p.metadata.author,"Writer");
     }
+    #[test] fn shared_icc2_shape_does_not_certify_remix_or_scripts() {
+        let mut value=serde_json::json!({"pointTypes":[],"styling":{},"rows":[{"objects":[{"id":"a"}]}]});
+        assert!(icc2_compatible(&value));
+        value["editor_id"]=serde_json::json!("iccremix");
+        assert!(!icc2_compatible(&value));
+        assert!(infer(&value,"Story").viewer_check.contains("Original website viewer required"));
+        value.as_object_mut().unwrap().remove("editor_id");
+        value["rows"][0]["requirementScript"]=serde_json::json!({"script":"[/tab/] == 4"});
+        assert!(!icc2_compatible(&value));
+    }
     #[test] fn forced_updates_cannot_replace_a_game_with_an_empty_source_stub(){assert!(validate_update(&serde_json::json!({"rows":[]})).is_err());assert!(validate_update(&serde_json::json!({"rows":[{"objects":[]}]})).is_err());assert!(validate_update(&serde_json::json!({"rows":[{"objects":[{"id":"a"}]}]})).is_ok());}
 }

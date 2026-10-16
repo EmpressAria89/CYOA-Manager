@@ -77,3 +77,7 @@ Vue/TypeScript lives in `src/`, Rust in `src-tauri/src/`, bundled viewers in `pu
 This fork was developed with AI assistance; the dated audit documents verification and remaining limitations.
 
 This fork retains the upstream project and bundled viewer credits: ICC Original by MeanDelay, ICC2 Plus by Wahaha303, and Om1cr0n's viewer. Catalog data comes from the [Infaera index](https://docs.google.com/spreadsheets/d/1jxBbWB08myhD8YXePPifsWQG3JH2qZtBs9Y5yYcqE7g/). See [LICENSE](LICENSE) for the manager license; CYOAs and bundled third-party material retain their own ownership.
+
+Catalog search, offline snapshots, original-viewer fallback and reviewed updates are described in [the catalog guide](docs/catalog.md). Implementation decisions and resumable scope are in [the catalog specification](docs/specs/catalog-redesign.md).
+
+For current review coverage and remaining proof gaps, read [skill assurance](docs/skills-assurance.md). [Next reliability slices](docs/specs/assurance-followups.md) provide implementation steps and acceptance conditions while retaining the later catalog, archive and reader decisions.

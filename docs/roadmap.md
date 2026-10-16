@@ -2,6 +2,8 @@
 
 These are proposed future changes, not claims of implemented features. Prioritize correctness and long-session stability before expansion. Deliver one reviewed slice at a time; preserve existing library/build identities.
 
+The [skill-assurance record](skills-assurance.md) maps current requirements to evidence. The [next-slice specification](specs/assurance-followups.md) defines implementation and acceptance for direct update-commit proof, retained inspection downloads, measured edition scans and shared completion handling.
+
 ## Phase 1: reliability and recovery
 
 | Feature | Reason | Acceptance condition |
@@ -20,7 +22,7 @@ Do not promise that every WebKit crash is eliminated. Measure repeated scrolling
 - Split `commands.rs` by download routing, artwork operations and reader windows. Preserve command names/payloads; move one boundary at a time with the same regression suite before/after.
 - Convert minified viewer replacements into a versioned bridge adapter with explicit marker counts and compatibility reporting. Unsupported engine updates must fail safely rather than partially patching gameplay.
 - Add native dependency advisory checks and a controlled upgrade cadence. The 2026-10-16 scan has zero vulnerability findings but retains seven unmaintained and two unsoundness warnings in upstream dependencies. Review upstream GTK3 binding retirement before a Tauri/WebKit stack migration; do not swap binding generations inside the current runtime.
-- Add catalog refresh feedback and a persisted last-known-good public catalog. Label stale data; do not confuse refresh failures with an empty catalog.
+- Delivered locally: persistent source-specific catalog snapshots, stale/error feedback, richer search and bounded result pages. Next measure source refresh concurrency and reusable inspected downloads; see [the catalog guide](catalog.md).
 - Consider library virtualization only after measuring thousands of cards. Preserve keyboard navigation, open menus, filters and cover frames. Avoid adding a virtualization dependency for the current library without evidence.
 - Add bounded download cancellation/retry and progress recovery. Cleanup may remove only uncommitted staging; committed files must survive later errors.
 - Strengthen power-loss durability with file/directory sync at important commit boundaries. Atomic rename protects against partial files but alone is not a guarantee against sudden disk/power failure.
@@ -30,7 +32,7 @@ Do not promise that every WebKit crash is eliminated. Measure repeated scrolling
 | Feature | User value | Boundary |
 |---|---|---|
 | Saved filter presets and collections | Quickly return to favorite authors/fandoms or unfinished stories | Separate personal organization from imported source metadata |
-| Edition comparison view | See changed choices, costs and requirements before updating | Match stable IDs; show unknown matches rather than guessing from names |
+| Richer edition comparison | Reviewed catalog updates now show added/removed/edited choices before applying; later add side-by-side detail | Match stable IDs; show unknown matches rather than guessing from names |
 | Build comparison and notes | Compare character variants and remember goals | Preserve original native code and edition fingerprint |
 | Per-CYOA reading profiles | Convenient typography, density and section visibility presets | Explicit reset; global edits cannot overwrite pinned exceptions |
 | Manual dependency associations | Correct ambiguous child-section relationships | Presentation-only relationships; no requirement/point changes |

@@ -83,6 +83,23 @@ export interface PerkSearchResult {
 }
 
 export interface CatalogEntry {
+  aliases?: string[];
+  alternateUrls?: string[];
+  projectUrls?: string[];
+  recoveryUrls?: string[];
+  staticUrls?: string[];
+  added?: string;
+  posted?: string;
+  updated?: string;
+  version?: string;
+  status?: string;
+  warnings?: string;
+  comments?: string;
+  sourceId?: string;
+  sourceName?: string;
+  sourceRow?: number;
+  provenance?: string[];
+  availability?: string;
   name: string;
   date: string;
   website: string;

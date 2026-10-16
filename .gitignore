@@ -41,3 +41,6 @@ validation/
 /tests/results/
 /tests/fixtures/
 /backups/
+
+# Local task tracker; canonical specifications live in docs/specs/
+.scratch/

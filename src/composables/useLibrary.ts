@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { PerkIndexStatus, PerkSearchResult, Project, ProjectPatch, Viewer } from "../types";
 import { resolveAuthor } from "./useAuthorAliases";
 import { useSettings } from "./useSettings";
+import { openReader } from "./useCompatibility";
 
 const rawProjects = ref<Project[]>([]);
 const projects = computed(() => rawProjects.value.map(project => ({...project, source_author:project.author, author:resolveAuthor(project.author)})));
@@ -213,12 +214,14 @@ export function useLibrary() {
   }
 
   async function openViewer(project: Project, viewerId: string) {
-    await invoke("open_viewer_window", {
+    const opened = await openReader({
       projectId: project.id,
       viewerId,
       projectName: project.name,
       cheatsEnabled: settings.value.cheatsEnabled,
     });
+
+    if (!opened) return;
 
     if (project.viewer_preference !== viewerId) {
       setProjectViewerPreferenceLocally(project.id, viewerId);

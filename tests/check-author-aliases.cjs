@@ -12,7 +12,7 @@ const URL=process.env.CYOA_TEST_URL||'http://127.0.0.1:5697';
   window.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback:()=>{},invoke:async(command,args)=>{
    if(command==='get_author_aliases')return JSON.parse(localStorage.getItem('test-author-aliases')||JSON.stringify(seed));
    if(command==='save_author_aliases'){window.__aliasWrites.push(args);localStorage.setItem('test-author-aliases',JSON.stringify(args.authors));return args.authors;}
-   if(command==='get_catalog_rows')return [['Title','Interactive','Author'],['New story','https://example.com/','Gaston1597']];
+   if(command==='get_catalog_snapshot')return {sources:[{id:'beta',name:'Beta Index',rows:[['Title','Interactive','Author'],['New story','https://example.com/','Gaston1597']],fetchedAt:'2026-10-16T10:00:00Z',stale:false,error:null}],fetchedAt:'2026-10-16T10:00:00Z',stale:false,warnings:[]};
    if(command==='get_library')return [project];if(command==='get_viewers')return [{id:'icc2-plus',name:'ICC2 Plus'}];if(command==='get_fonts')return ['system-ui'];
    if(command==='update_project'){window.__rawAuthor=args.patch.author;return {...project,...args.patch};}return null;
   }};

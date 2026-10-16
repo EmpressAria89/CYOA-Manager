@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { openReader } from "../composables/useCompatibility";
 import {ref,computed,onMounted} from 'vue';
 import {invoke} from '@tauri-apps/api/core';
 import type {Project} from '../types';
@@ -20,7 +21,7 @@ async function load(){
  versions.value=props.starredOnly?editions.filter(v=>v.starred):editions;library.value=projects;groups.value=archiveGroups||[];active.value=projects.some(p=>p.id===props.project.id);copies.value=projects.filter(p=>p.id!==props.project.id);groupName.value=groups.value.find(p=>p.id===props.project.id)?.title||props.project.title||props.project.name;
 }
 async function run(action:()=>Promise<unknown>){busy.value=true;error.value='';message.value='';try{await action();await loadLibrary(true);emit('restored');await load();}catch(e){error.value=String(e);}finally{busy.value=false;}}
-function open(version:Version){return run(()=>invoke('open_viewer_window',{projectId:props.project.id,versionId:version.id,projectName:version.project.title||version.project.name,viewerId:version.project.viewer_preference||'icc2-plus',cheatsEnabled:settings.value.cheatsEnabled}));}
+function open(version:Version){return run(()=>openReader({projectId:props.project.id,versionId:version.id,projectName:version.project.title||version.project.name,viewerId:version.project.viewer_preference||'icc2-plus',cheatsEnabled:settings.value.cheatsEnabled}));}
 function restore(version:Version){return run(async()=>{const project=await invoke<Project>('restore_version',{id:props.project.id,versionId:version.id});const existed=library.value.some(p=>p.id===project.id);message.value=existed?`“${project.title||project.name}” is already in your library.`:`Added “${project.title||project.name}” as a separate library card. Other cards and this archive are unchanged.`;});}
 function edit(version:Version,next:'rename'|'move'){editing.value=version.id;mode.value=next;editionName.value=version.project.title||version.project.name;destination.value='';newGroupName.value=editionName.value;}
 function saveEdit(version:Version){return run(async()=>{

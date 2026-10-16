@@ -3,9 +3,9 @@ use serde_json::Value;
 use std::{collections::BTreeMap,path::Path};
 #[derive(Default,Clone,Serialize)]
 pub struct UpdateDiff { pub changed: bool, pub added: Vec<String>, pub removed: Vec<String>, pub edited: Vec<String>, pub other_changes: Vec<String> }
-fn choices(json:&Value)->BTreeMap<String,Value>{
+fn choices(json:&Value)->BTreeMap<String,&Value>{
     let mut result=BTreeMap::new();
-    if let Some(rows)=json["rows"].as_array(){for row in rows {if let Some(choices)=row["objects"].as_array().or(row["perks"].as_array()){for choice in choices{if let Some(id)=choice["id"].as_str().or(choice["uid"].as_str()){result.insert(id.into(),choice.clone());}}}}}
+    if let Some(rows)=json["rows"].as_array(){for row in rows {if let Some(choices)=row["objects"].as_array().or(row["perks"].as_array()){for choice in choices{if let Some(id)=choice["id"].as_str().or(choice["uid"].as_str()){result.insert(id.into(),choice);}}}}}
     result
 }
 fn label(id:&str,value:&Value)->String{let title=value["title"].as_str().or(value["name"].as_str()).unwrap_or(id);format!("{} [{}]",title,id)}
@@ -25,9 +25,14 @@ pub fn compare(before:&Value,after:&Value)->UpdateDiff{
     report
 }
 pub fn compare_files(before:&Path,after:&Path)->Result<UpdateDiff,String>{
-    let a=serde_json::from_slice(&std::fs::read(before).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    let b=serde_json::from_slice(&std::fs::read(after).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    let mut diff=compare(&a,&b);
+    let mut diff = {
+        let read = |path: &Path| -> Result<Value,String> {
+            let file=std::fs::File::open(path).map_err(|e|e.to_string())?;
+            serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e|e.to_string())
+        };
+        let a=read(before)?;let b=read(after)?;
+        compare(&a,&b)
+    }; // Release artwork-heavy JSON before scanning local assets.
     let old=crate::assets::manifest(before)?;let new=crate::assets::manifest(after)?;
     for name in old.keys().chain(new.keys()).collect::<std::collections::BTreeSet<_>>() {if old.get(name)!=new.get(name){diff.changed=true;diff.other_changes.push(format!("Local asset: {name}"));}}
     Ok(diff)

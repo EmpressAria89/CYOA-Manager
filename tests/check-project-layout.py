@@ -40,6 +40,12 @@ assert not tauri['app']['windows'][0].get('fullscreen', False)
 workflow = (ROOT / '.github/workflows/linux.yml').read_text()
 assert 'ubuntu-24.04' in workflow and not re.search(r'windows-latest|macos-latest|release-multi-platform', workflow)
 assert workflow.index('run: pnpm release:linux') < workflow.index('run: pnpm test:rust'), 'Build frontendDist before Rust tests embed it'
+# A clean checkout has no frontendDist for custom-protocol Rust tests to embed.
+for document in ('tests/README.md', 'docs/development.md'):
+    for block in re.findall(r'```(?:bash|sh)?\n([\s\S]*?)```', (ROOT / document).read_text()):
+        if 'pnpm test:rust' in block:
+            prefix = block.split('pnpm test:rust', 1)[0]
+            assert 'pnpm build' in prefix or 'pnpm release:linux' in prefix, f'{document}: build frontendDist before Rust tests'
 for script in [ROOT / 'scripts/launch-linux.sh']:
     subprocess.run(['bash', '-n', str(script)], check=True)
 with tempfile.TemporaryDirectory(prefix='cyoa-source-check-') as temp:
